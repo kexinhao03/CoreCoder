@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
 from .models import EventRecord, RunRecord, ToolCallRecord
 from .state import (
     ExecutionKind,
@@ -75,6 +76,19 @@ class SQLiteStore:
                     ended_at TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS approvals (
+                    id TEXT PRIMARY KEY,
+                    tool_call_id TEXT NOT NULL UNIQUE REFERENCES tool_calls(id),
+                    status TEXT NOT NULL,
+                    decision TEXT,
+                    tool_name TEXT NOT NULL,
+                    arguments_summary TEXT NOT NULL,
+                    workspace TEXT NOT NULL,
+                    risk_reason TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    resolved_at TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id TEXT NOT NULL REFERENCES runs(id),
@@ -89,6 +103,8 @@ class SQLiteStore:
                     ON tool_calls(run_id);
                 CREATE INDEX IF NOT EXISTS idx_tool_calls_retry_of
                     ON tool_calls(retry_of);
+                CREATE INDEX IF NOT EXISTS idx_approvals_tool_call_id
+                    ON approvals(tool_call_id);
                 CREATE INDEX IF NOT EXISTS idx_events_run_sequence
                     ON events(run_id, sequence);
                 """
@@ -201,6 +217,17 @@ class SQLiteStore:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT status FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if run_row is None:
+                raise KeyError(f"run not found: {run_id}")
+            run_status = RunStatus(run_row["status"])
+            if run_status not in {RunStatus.CREATED, RunStatus.RUNNING}:
+                raise ValueError(
+                    f"run cannot accept tool calls: {run_status.value}"
+                )
+
             attempt = 1
             if retry_of is not None:
                 source = connection.execute(
@@ -220,6 +247,22 @@ class SQLiteStore:
                         "non-idempotent tool call cannot be auto-retried"
                     )
                 attempt = source["attempt"] + 1
+
+            active_call = connection.execute(
+                """
+                SELECT id FROM tool_calls
+                WHERE run_id = ? AND status IN (?, ?, ?)
+                LIMIT 1
+                """,
+                (
+                    run_id,
+                    ToolCallStatus.CREATED.value,
+                    ToolCallStatus.WAITING_APPROVAL.value,
+                    ToolCallStatus.RUNNING.value,
+                ),
+            ).fetchone()
+            if active_call is not None:
+                raise ValueError("run already has an active tool call")
 
             call = ToolCallRecord(
                 id=resolved_id,
@@ -306,6 +349,234 @@ class SQLiteStore:
         finally:
             connection.close()
         return call
+
+    def request_approval(
+        self,
+        tool_call_id: str,
+        *,
+        arguments_summary: str,
+        workspace: str,
+        risk_reason: str,
+        approval_id: str | None = None,
+    ) -> ApprovalRecord:
+        resolved_id = approval_id or uuid.uuid4().hex
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            call_row = connection.execute(
+                "SELECT * FROM tool_calls WHERE id = ?", (tool_call_id,)
+            ).fetchone()
+            if call_row is None:
+                raise KeyError(f"tool call not found: {tool_call_id}")
+            run_row = connection.execute(
+                "SELECT * FROM runs WHERE id = ?", (call_row["run_id"],)
+            ).fetchone()
+            if run_row is None:
+                raise KeyError(f"run not found: {call_row['run_id']}")
+
+            ensure_run_transition(
+                RunStatus(run_row["status"]), RunStatus.WAITING_APPROVAL
+            )
+            ensure_tool_call_transition(
+                ToolCallStatus(call_row["status"]),
+                ToolCallStatus.WAITING_APPROVAL,
+            )
+            approval = ApprovalRecord(
+                id=resolved_id,
+                tool_call_id=tool_call_id,
+                status=ApprovalStatus.PENDING,
+                decision=None,
+                tool_name=call_row["tool_name"],
+                arguments_summary=arguments_summary,
+                workspace=workspace,
+                risk_reason=risk_reason,
+                requested_at=timestamp,
+                resolved_at=None,
+            )
+            connection.execute(
+                """
+                INSERT INTO approvals (
+                    id, tool_call_id, status, decision, tool_name,
+                    arguments_summary, workspace, risk_reason,
+                    requested_at, resolved_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    approval.id,
+                    approval.tool_call_id,
+                    approval.status.value,
+                    approval.decision,
+                    approval.tool_name,
+                    approval.arguments_summary,
+                    approval.workspace,
+                    approval.risk_reason,
+                    approval.requested_at,
+                    approval.resolved_at,
+                ),
+            )
+            connection.execute(
+                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                (
+                    RunStatus.WAITING_APPROVAL.value,
+                    timestamp,
+                    call_row["run_id"],
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE tool_calls SET status = ?, updated_at = ? WHERE id = ?
+                """,
+                (
+                    ToolCallStatus.WAITING_APPROVAL.value,
+                    timestamp,
+                    tool_call_id,
+                ),
+            )
+            sequence = self._next_event_sequence(
+                connection, call_row["run_id"]
+            )
+            self._insert_event(
+                connection,
+                run_id=call_row["run_id"],
+                sequence=sequence,
+                event_type="approval.requested",
+                payload={
+                    "approval_id": approval.id,
+                    "tool_call_id": tool_call_id,
+                    "tool_name": approval.tool_name,
+                    "risk_reason": risk_reason,
+                },
+                created_at=timestamp,
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return approval
+
+    def resolve_approval(
+        self,
+        approval_id: str,
+        decision: ApprovalDecision,
+    ) -> ApprovalRecord:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            approval_row = connection.execute(
+                "SELECT * FROM approvals WHERE id = ?", (approval_id,)
+            ).fetchone()
+            if approval_row is None:
+                raise KeyError(f"approval not found: {approval_id}")
+            if ApprovalStatus(approval_row["status"]) is not ApprovalStatus.PENDING:
+                raise ValueError("approval is already resolved")
+
+            call_row = connection.execute(
+                "SELECT * FROM tool_calls WHERE id = ?",
+                (approval_row["tool_call_id"],),
+            ).fetchone()
+            if call_row is None:
+                raise KeyError(
+                    f"tool call not found: {approval_row['tool_call_id']}"
+                )
+            run_row = connection.execute(
+                "SELECT * FROM runs WHERE id = ?", (call_row["run_id"],)
+            ).fetchone()
+            if run_row is None:
+                raise KeyError(f"run not found: {call_row['run_id']}")
+
+            ensure_run_transition(
+                RunStatus(run_row["status"]), RunStatus.RUNNING
+            )
+            if decision is ApprovalDecision.DENY:
+                ensure_tool_call_transition(
+                    ToolCallStatus(call_row["status"]),
+                    ToolCallStatus.CANCELLED,
+                )
+                approval_status = ApprovalStatus.DENIED
+            else:
+                approval_status = ApprovalStatus.APPROVED
+
+            connection.execute(
+                """
+                UPDATE approvals
+                SET status = ?, decision = ?, resolved_at = ?
+                WHERE id = ?
+                """,
+                (
+                    approval_status.value,
+                    decision.value,
+                    timestamp,
+                    approval_id,
+                ),
+            )
+            connection.execute(
+                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                (RunStatus.RUNNING.value, timestamp, call_row["run_id"]),
+            )
+            if decision is ApprovalDecision.DENY:
+                connection.execute(
+                    """
+                    UPDATE tool_calls
+                    SET status = ?, updated_at = ?, ended_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        ToolCallStatus.CANCELLED.value,
+                        timestamp,
+                        timestamp,
+                        call_row["id"],
+                    ),
+                )
+            sequence = self._next_event_sequence(
+                connection, call_row["run_id"]
+            )
+            self._insert_event(
+                connection,
+                run_id=call_row["run_id"],
+                sequence=sequence,
+                event_type="approval.resolved",
+                payload={
+                    "approval_id": approval_id,
+                    "tool_call_id": call_row["id"],
+                    "decision": decision.value,
+                },
+                created_at=timestamp,
+            )
+            updated_row = connection.execute(
+                "SELECT * FROM approvals WHERE id = ?", (approval_id,)
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self._approval_from_row(updated_row)
+
+    def get_approval(self, approval_id: str) -> ApprovalRecord:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM approvals WHERE id = ?", (approval_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(approval_id)
+        return self._approval_from_row(row)
+
+    def get_approval_for_tool_call(
+        self, tool_call_id: str
+    ) -> ApprovalRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM approvals WHERE tool_call_id = ?",
+                (tool_call_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._approval_from_row(row)
 
     def get_tool_call(self, tool_call_id: str) -> ToolCallRecord:
         with self._connect() as connection:
@@ -475,6 +746,60 @@ class SQLiteStore:
             )
             for row in rows
         ]
+
+    @staticmethod
+    def _next_event_sequence(
+        connection: sqlite3.Connection, run_id: str
+    ) -> int:
+        return connection.execute(
+            """
+            SELECT COALESCE(MAX(sequence), 0) + 1
+            FROM events
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()[0]
+
+    @staticmethod
+    def _insert_event(
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        sequence: int,
+        event_type: str,
+        payload: dict,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO events (
+                run_id, sequence, type, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                sequence,
+                event_type,
+                json.dumps(payload, sort_keys=True),
+                created_at,
+            ),
+        )
+
+    @staticmethod
+    def _approval_from_row(row: sqlite3.Row) -> ApprovalRecord:
+        decision = row["decision"]
+        return ApprovalRecord(
+            id=row["id"],
+            tool_call_id=row["tool_call_id"],
+            status=ApprovalStatus(row["status"]),
+            decision=ApprovalDecision(decision) if decision is not None else None,
+            tool_name=row["tool_name"],
+            arguments_summary=row["arguments_summary"],
+            workspace=row["workspace"],
+            risk_reason=row["risk_reason"],
+            requested_at=row["requested_at"],
+            resolved_at=row["resolved_at"],
+        )
 
     @staticmethod
     def _tool_call_from_row(row: sqlite3.Row) -> ToolCallRecord:

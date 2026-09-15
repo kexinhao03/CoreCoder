@@ -60,7 +60,7 @@ def test_initialize_creates_runtime_tables(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-    assert {"runs", "tool_calls", "events"} <= names
+    assert {"runs", "tool_calls", "approvals", "events"} <= names
 
 
 def test_create_run_persists_state_and_created_event(tmp_path):
@@ -139,6 +139,32 @@ def test_create_tool_call_persists_metadata_and_event(store_with_run):
         "tool_call_id": "call-1",
         "tool_name": "bash",
     }
+
+
+def test_run_rejects_second_active_tool_call(store_with_run):
+    create_test_call(store_with_run, "call-1")
+
+    with pytest.raises(
+        ValueError, match="run already has an active tool call"
+    ):
+        create_test_call(store_with_run, "call-2")
+
+    assert store_with_run.list_events("run-1")[-1].payload[
+        "tool_call_id"
+    ] == "call-1"
+
+
+def test_cancelled_run_rejects_new_tool_call(store_with_run):
+    store_with_run.transition_run(
+        "run-1", RunStatus.CANCELLED, "run.cancelled"
+    )
+
+    with pytest.raises(
+        ValueError, match="run cannot accept tool calls: cancelled"
+    ):
+        create_test_call(store_with_run, "call-1")
+
+    assert store_with_run.list_events("run-1")[-1].type == "run.cancelled"
 
 
 def test_retry_is_a_new_tool_call_with_lineage(store_with_run):
