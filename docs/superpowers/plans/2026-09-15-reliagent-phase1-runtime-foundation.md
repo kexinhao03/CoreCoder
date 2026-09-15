@@ -399,7 +399,7 @@ git commit -m "feat(runtime): persist runs and audit events"
 - Consumes: `ensure_run_transition()` from Task 1 and Run persistence from Task 3.
 - Produces: `transition_run(run_id, to_status, event_type, payload=None) -> RunRecord`.
 
-- [ ] **Step 1: Write failing transition tests**
+- [x] **Step 1: Write failing transition tests**
 
 ```python
 import pytest
@@ -429,13 +429,13 @@ def test_invalid_transition_writes_neither_state_nor_event(store_with_run):
 
 Add a local`store_with_run`fixture to this test module; it initializes a temporary DB and creates`run-1`with the same fixed fields as Task 3.
 
-- [ ] **Step 2: Run the new tests and verify RED**
+- [x] **Step 2: Run the new tests and verify RED**
 
 Run: `python -m pytest tests/runtime/test_store.py -v`
 
 Expected: both new tests fail because`transition_run`is absent.
 
-- [ ] **Step 3: Implement the atomic transition**
+- [x] **Step 3: Implement the atomic transition**
 
 Within one`BEGIN IMMEDIATE`transaction:
 
@@ -448,13 +448,13 @@ Within one`BEGIN IMMEDIATE`transaction:
 
 Rollback on all exceptions. Do not catch`InvalidTransition`or convert it to text.
 
-- [ ] **Step 4: Run store tests and verify GREEN**
+- [x] **Step 4: Run store tests and verify GREEN**
 
 Run: `python -m pytest tests/runtime/test_store.py -v`
 
 Expected: 4 passed.
 
-- [ ] **Step 5: Commit atomic Run transitions**
+- [x] **Step 5: Commit atomic Run transitions**
 
 ```bash
 git add corecoder/runtime/store.py tests/runtime/test_store.py

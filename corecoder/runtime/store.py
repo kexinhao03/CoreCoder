@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import EventRecord, RunRecord
-from .state import RunStatus
+from .state import RunStatus, ensure_run_transition
 
 
 class SQLiteStore:
@@ -166,6 +166,69 @@ class SQLiteStore:
             prompt_version=row["prompt_version"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    def transition_run(
+        self,
+        run_id: str,
+        to_status: RunStatus,
+        event_type: str,
+        payload: dict | None = None,
+    ) -> RunRecord:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"run not found: {run_id}")
+
+            ensure_run_transition(RunStatus(row["status"]), to_status)
+            sequence = connection.execute(
+                """
+                SELECT COALESCE(MAX(sequence), 0) + 1
+                FROM events
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                (to_status.value, timestamp, run_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO events (
+                    run_id, sequence, type, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    sequence,
+                    event_type,
+                    json.dumps(payload or {}, sort_keys=True),
+                    timestamp,
+                ),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+        return RunRecord(
+            id=row["id"],
+            goal=row["goal"],
+            workflow=row["workflow"],
+            status=to_status,
+            workspace=row["workspace"],
+            model=row["model"],
+            prompt_version=row["prompt_version"],
+            created_at=row["created_at"],
+            updated_at=timestamp,
         )
 
     def list_events(self, run_id: str) -> list[EventRecord]:
