@@ -2,7 +2,13 @@ import sqlite3
 
 import pytest
 
-from corecoder.runtime.state import InvalidTransition, RunStatus
+from corecoder.runtime.state import (
+    ExecutionKind,
+    InvalidTransition,
+    RiskLevel,
+    RunStatus,
+    ToolCallStatus,
+)
 from corecoder.runtime.store import SQLiteStore
 
 
@@ -19,6 +25,27 @@ def store_with_run(tmp_path):
         run_id="run-1",
     )
     return store
+
+
+def create_test_call(
+    store,
+    tool_call_id,
+    *,
+    idempotent=True,
+    retry_of=None,
+):
+    return store.create_tool_call(
+        run_id="run-1",
+        tool_name="bash",
+        arguments={"command": "pytest -q"},
+        risk_level=RiskLevel.READ_ONLY,
+        execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=idempotent,
+        idempotency_key="tests" if idempotent else None,
+        timeout_seconds=120,
+        retry_of=retry_of,
+        tool_call_id=tool_call_id,
+    )
 
 
 def test_initialize_creates_runtime_tables(tmp_path):
@@ -86,3 +113,100 @@ def test_invalid_transition_writes_neither_state_nor_event(store_with_run):
 
     assert store_with_run.get_run("run-1").status is RunStatus.SUCCEEDED
     assert store_with_run.list_events("run-1") == before
+
+
+def test_create_tool_call_persists_metadata_and_event(store_with_run):
+    call = store_with_run.create_tool_call(
+        run_id="run-1",
+        tool_name="bash",
+        arguments={"command": "pytest -q"},
+        risk_level=RiskLevel.MUTATING,
+        execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=False,
+        idempotency_key=None,
+        timeout_seconds=120,
+        tool_call_id="call-1",
+    )
+
+    assert call.status is ToolCallStatus.CREATED
+    assert call.attempt == 1
+    assert store_with_run.get_tool_call("call-1") == call
+    assert store_with_run.list_events("run-1")[-1].type == "tool.created"
+
+
+def test_retry_is_a_new_tool_call_with_lineage(store_with_run):
+    first = create_test_call(store_with_run, "call-1")
+    store_with_run.transition_tool_call(
+        "call-1", ToolCallStatus.RUNNING, "tool.started"
+    )
+    store_with_run.transition_tool_call(
+        "call-1", ToolCallStatus.FAILED, "tool.failed"
+    )
+
+    retry = store_with_run.create_tool_call(
+        run_id="run-1",
+        tool_name=first.tool_name,
+        arguments=first.arguments,
+        risk_level=first.risk_level,
+        execution_kind=first.execution_kind,
+        idempotent=first.idempotent,
+        idempotency_key=first.idempotency_key,
+        timeout_seconds=first.timeout_seconds,
+        retry_of="call-1",
+        tool_call_id="call-2",
+    )
+
+    assert retry.retry_of == "call-1"
+    assert retry.attempt == 2
+    with pytest.raises(InvalidTransition):
+        store_with_run.transition_tool_call(
+            "call-1", ToolCallStatus.RUNNING, "tool.retry_started"
+        )
+
+
+def test_retry_must_reference_same_run(store_with_run, tmp_path):
+    create_test_call(store_with_run, "call-1")
+    store_with_run.create_run(
+        goal="other",
+        workflow="repo_maintenance",
+        workspace=tmp_path,
+        model="test-model",
+        prompt_version="v1",
+        run_id="run-2",
+    )
+
+    with pytest.raises(ValueError, match="retry_of belongs to another run"):
+        store_with_run.create_tool_call(
+            run_id="run-2",
+            tool_name="bash",
+            arguments={"command": "pytest"},
+            risk_level=RiskLevel.MUTATING,
+            execution_kind=ExecutionKind.SUBPROCESS,
+            idempotent=False,
+            idempotency_key=None,
+            timeout_seconds=120,
+            retry_of="call-1",
+            tool_call_id="call-2",
+        )
+
+
+def test_non_idempotent_tool_call_cannot_be_retried(store_with_run):
+    create_test_call(store_with_run, "call-1", idempotent=False)
+    store_with_run.transition_tool_call(
+        "call-1", ToolCallStatus.RUNNING, "tool.started"
+    )
+    store_with_run.transition_tool_call(
+        "call-1", ToolCallStatus.FAILED, "tool.failed"
+    )
+
+    with pytest.raises(
+        ValueError, match="non-idempotent tool call cannot be auto-retried"
+    ):
+        create_test_call(store_with_run, "call-2", retry_of="call-1")
+
+
+def test_unfinished_tool_call_cannot_be_retried(store_with_run):
+    create_test_call(store_with_run, "call-1")
+
+    with pytest.raises(ValueError, match="retry source is not retryable"):
+        create_test_call(store_with_run, "call-2", retry_of="call-1")

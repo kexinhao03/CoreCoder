@@ -473,7 +473,7 @@ git commit -m "feat(runtime): make run transitions atomic"
 - Consumes: ToolCall state and model contracts from Tasks 1—2.
 - Produces: `create_tool_call()`, `get_tool_call()`, `transition_tool_call()`.
 
-- [ ] **Step 1: Write failing ToolCall creation test**
+- [x] **Step 1: Write failing ToolCall creation test**
 
 ```python
 from corecoder.runtime.state import ExecutionKind, RiskLevel, ToolCallStatus
@@ -492,7 +492,7 @@ def test_create_tool_call_persists_metadata_and_event(store_with_run):
     assert store_with_run.list_events("run-1")[-1].type == "tool.created"
 ```
 
-- [ ] **Step 2: Write failing ToolCall transition and retry tests**
+- [x] **Step 2: Write failing ToolCall transition and retry tests**
 
 ```python
 def test_retry_is_a_new_tool_call_with_lineage(store_with_run):
@@ -532,13 +532,13 @@ def test_retry_must_reference_same_run(store_with_run, tmp_path):
 
 `create_test_call()`is a test-only helper in`tests/runtime/test_store.py`; it calls`create_tool_call()`with`RiskLevel.READ_ONLY`,`ExecutionKind.SUBPROCESS`and`idempotent=True`, so the retry test exercises an explicitly retryable operation. The separate creation test above retains`idempotent=False`to prove mutating metadata is persisted without implying retry permission.
 
-- [ ] **Step 3: Run new ToolCall tests and verify RED**
+- [x] **Step 3: Run new ToolCall tests and verify RED**
 
 Run: `python -m pytest tests/runtime/test_store.py -v`
 
 Expected: failures report missing`create_tool_call`and`transition_tool_call`.
 
-- [ ] **Step 4: Implement ToolCall creation**
+- [x] **Step 4: Implement ToolCall creation**
 
 `create_tool_call()`uses`BEGIN IMMEDIATE`. If`retry_of`is absent, set`attempt = 1`. If present:
 
@@ -551,7 +551,7 @@ Expected: failures report missing`create_tool_call`and`transition_tool_call`.
 
 Insert`tool.created`with payload containing only`tool_name`,`attempt`and`retry_of`; do not put raw arguments in the event.
 
-- [ ] **Step 5: Implement ToolCall transitions**
+- [x] **Step 5: Implement ToolCall transitions**
 
 `transition_tool_call(call_id, to_status, event_type, result_summary=None, payload=None)`loads the call and its`run_id`, validates with`ensure_tool_call_transition`, updates timestamps, and appends the event in one transaction.
 
@@ -560,13 +560,13 @@ Insert`tool.created`with payload containing only`tool_name`,`attempt`and`retry_o
 - Leave`ended_at`unset for`INTERRUPTED`, because recovery has not resolved the outcome.
 - Truncate`result_summary`to2,000characters before persistence; full output storage belongs to Phase 2.
 
-- [ ] **Step 6: Run store tests and verify GREEN**
+- [x] **Step 6: Run store tests and verify GREEN**
 
 Run: `python -m pytest tests/runtime/test_store.py -v`
 
 Expected: all runtime store tests pass.
 
-- [ ] **Step 7: Commit ToolCall persistence**
+- [x] **Step 7: Commit ToolCall persistence**
 
 ```bash
 git add corecoder/runtime/store.py tests/runtime/test_store.py
