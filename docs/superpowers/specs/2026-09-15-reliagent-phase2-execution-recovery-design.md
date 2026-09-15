@@ -1,7 +1,7 @@
 # ReliAgent Phase 2: Approval, Execution, and Recovery Design
 
 **Date:** 2026-09-15  
-**Status:** proposed for user review  
+**Status:** approved
 **Depends on:** Phase 1 runtime state and SQLite store  
 **Source of requirements:** `ReliAgent-需求文档-v1.1.md`
 
@@ -60,10 +60,11 @@ teaching engine unchanged during this phase.
 
 ## 4. P0 Concurrency Rule
 
-One Run may have at most one active ToolCall in Phase 2. Active means
-`waiting_approval` or `running`. The executor uses an in-process per-Run lock for
-coordination and the Store enforces the persisted precondition inside a
-`BEGIN IMMEDIATE` transaction.
+One Run may have at most one active ToolCall in Phase 2. Active means `created`,
+`waiting_approval`, or `running`; `created` reserves the slot during the short
+submission transaction before policy handling. The executor uses an in-process
+per-Run lock for coordination and the Store enforces the persisted precondition
+inside a `BEGIN IMMEDIATE` transaction.
 
 This intentionally serializes multiple tool requests. It prevents ambiguous Run
 states such as one call waiting for approval while another is running. Parallel
