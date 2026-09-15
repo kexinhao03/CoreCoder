@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -50,8 +51,17 @@ class ManagedProcessRunner:
         spec: ProcessSpec,
         cancellation_event: threading.Event,
     ) -> ProcessResult:
-        del cancellation_event  # Timeout and cancellation handling are introduced in Task 5.
         started_at = time.monotonic()
+        if cancellation_event.is_set():
+            return ProcessResult(
+                exit_code=None,
+                stdout="",
+                stderr="",
+                duration_seconds=time.monotonic() - started_at,
+                failure_kind=FailureKind.CANCELLED,
+                termination_confirmed=True,
+            )
+
         platform_options: dict[str, object]
         if os.name == "nt":
             platform_options = {
@@ -80,10 +90,49 @@ class ManagedProcessRunner:
                 termination_confirmed=True,
             )
 
-        stdout_bytes, stderr_bytes = process.communicate()
-        failure_kind = None if process.returncode == 0 else FailureKind.NONZERO_EXIT
+        failure_kind = None
+        termination_confirmed = True
+        while True:
+            remaining = spec.timeout_seconds - (time.monotonic() - started_at)
+            cancelled = cancellation_event.is_set()
+            if cancelled or remaining <= 0:
+                # A completed process wins a race with cancellation or the deadline.
+                if process.poll() is not None:
+                    try:
+                        stdout_bytes, stderr_bytes = process.communicate(timeout=0.05)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+
+                failure_kind = FailureKind.CANCELLED if cancelled else FailureKind.TIMED_OUT
+                termination_confirmed = _terminate(process, spec.termination_grace_seconds)
+                try:
+                    stdout_bytes, stderr_bytes = process.communicate(
+                        timeout=max(spec.termination_grace_seconds, 0.1),
+                    )
+                except subprocess.TimeoutExpired as error:
+                    stdout_bytes = error.output or b""
+                    stderr_bytes = error.stderr or b""
+                    termination_confirmed = False
+                    if os.name == "posix":
+                        process.stdout.close()
+                        process.stderr.close()
+                    # Windows communicate readers own the pipes until EOF; close may block.
+                if not termination_confirmed:
+                    failure_kind = FailureKind.TERMINATION_UNKNOWN
+                break
+
+            try:
+                stdout_bytes, stderr_bytes = process.communicate(timeout=min(0.05, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                # communicate retains cumulative bytes; retrying must not append them.
+                pass
+
+        if failure_kind is None and process.returncode != 0:
+            failure_kind = FailureKind.NONZERO_EXIT
         return ProcessResult(
-            exit_code=process.returncode,
+            exit_code=process.returncode if termination_confirmed else None,
             stdout=_bound_output(
                 stdout_bytes.decode("utf-8", errors="replace"),
                 spec.output_limit,
@@ -94,8 +143,52 @@ class ManagedProcessRunner:
             ),
             duration_seconds=time.monotonic() - started_at,
             failure_kind=failure_kind,
-            termination_confirmed=True,
+            termination_confirmed=termination_confirmed,
         )
+
+
+def _termination_confirmed(process: subprocess.Popen) -> bool:
+    if process.poll() is None:
+        return False
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        return False
+    return True
+
+
+def _wait_for_termination(process: subprocess.Popen, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        if _termination_confirmed(process):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.01, remaining))
+
+
+def _terminate(process: subprocess.Popen, grace: float) -> bool:
+    if _termination_confirmed(process):
+        return True
+    for force, timeout in ((False, grace), (True, max(grace, 0.1))):
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            elif force:
+                process.kill()
+            else:
+                process.terminate()
+        except OSError:
+            # Even ESRCH is not proof: confirm the parent and original group are gone.
+            pass
+        if _wait_for_termination(process, timeout):
+            return True
+    return False
 
 
 def _bound_output(text: str, limit: int) -> str:
