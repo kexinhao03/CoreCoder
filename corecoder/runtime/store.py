@@ -488,12 +488,21 @@ class SQLiteStore:
             if run_row is None:
                 raise KeyError(f"run not found: {call_row['run_id']}")
 
-            ensure_run_transition(
-                RunStatus(run_row["status"]), RunStatus.RUNNING
-            )
+            run_status = RunStatus(run_row["status"])
+            call_status = ToolCallStatus(call_row["status"])
+            if (
+                run_status is not RunStatus.WAITING_APPROVAL
+                or call_status is not ToolCallStatus.WAITING_APPROVAL
+            ):
+                raise ValueError(
+                    "approval state mismatch: "
+                    f"run={run_status.value}, tool_call={call_status.value}"
+                )
+
+            ensure_run_transition(run_status, RunStatus.RUNNING)
             if decision is ApprovalDecision.DENY:
                 ensure_tool_call_transition(
-                    ToolCallStatus(call_row["status"]),
+                    call_status,
                     ToolCallStatus.CANCELLED,
                 )
                 approval_status = ApprovalStatus.DENIED

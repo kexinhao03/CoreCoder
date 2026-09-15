@@ -25,6 +25,26 @@ def create_mutating_call(store, call_id="call-1"):
     )
 
 
+def request_test_approval(store):
+    create_mutating_call(store)
+    store.request_approval(
+        "call-1",
+        arguments_summary="pytest",
+        workspace="/tmp/work",
+        risk_reason="runs a command",
+        approval_id="approval-1",
+    )
+
+
+def approval_facts(store):
+    return (
+        store.get_approval("approval-1"),
+        store.get_run("run-1"),
+        store.get_tool_call("call-1"),
+        store.list_events("run-1"),
+    )
+
+
 def test_approval_record_is_frozen():
     approval = ApprovalRecord(
         id="approval-1",
@@ -181,6 +201,67 @@ def test_denial_cancels_call_and_duplicate_resolution_is_atomic(running_store):
         )
     assert running_store.get_approval("approval-1") == denied
     assert running_store.list_events("run-1") == before
+
+
+def test_allow_once_rejects_cancelled_tool_call_without_writes(running_store):
+    request_test_approval(running_store)
+    running_store.transition_tool_call(
+        "call-1", ToolCallStatus.CANCELLED, "tool.cancelled"
+    )
+    before = approval_facts(running_store)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "approval state mismatch: "
+            "run=waiting_approval, tool_call=cancelled"
+        ),
+    ):
+        running_store.resolve_approval(
+            "approval-1", ApprovalDecision.ALLOW_ONCE
+        )
+
+    assert approval_facts(running_store) == before
+
+
+def test_allow_once_rejects_paused_run_without_writes(running_store):
+    request_test_approval(running_store)
+    running_store.transition_run("run-1", RunStatus.PAUSED, "run.paused")
+    before = approval_facts(running_store)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "approval state mismatch: "
+            "run=paused, tool_call=waiting_approval"
+        ),
+    ):
+        running_store.resolve_approval(
+            "approval-1", ApprovalDecision.ALLOW_ONCE
+        )
+
+    assert approval_facts(running_store) == before
+
+
+def test_allow_once_rejects_when_run_and_call_both_left_waiting_state(
+    running_store,
+):
+    request_test_approval(running_store)
+    running_store.transition_tool_call(
+        "call-1", ToolCallStatus.CANCELLED, "tool.cancelled"
+    )
+    running_store.transition_run("run-1", RunStatus.PAUSED, "run.paused")
+    before = approval_facts(running_store)
+
+    with pytest.raises(
+        ValueError,
+        match="approval state mismatch: run=paused, tool_call=cancelled",
+    ):
+        running_store.resolve_approval(
+            "approval-1", ApprovalDecision.ALLOW_ONCE
+        )
+
+    assert approval_facts(running_store) == before
 
 
 def test_missing_approval_id_raises_key_error(running_store):
