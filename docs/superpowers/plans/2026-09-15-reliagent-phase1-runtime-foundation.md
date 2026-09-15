@@ -270,7 +270,7 @@ git commit -m "feat(runtime): add immutable runtime records"
 - Consumes: `RunRecord`, `RunStatus`.
 - Produces: `SQLiteStore(path)`, `initialize()`, `create_run()`, `get_run()`.
 
-- [ ] **Step 1: Write failing tests for schema and Run creation**
+- [x] **Step 1: Write failing tests for schema and Run creation**
 
 ```python
 import sqlite3
@@ -303,13 +303,13 @@ def test_create_run_persists_state_and_created_event(tmp_path):
     assert [(event.sequence, event.type) for event in events] == [(1, "run.created")]
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `python -m pytest tests/runtime/test_store.py -v`
 
 Expected: import fails because`corecoder.runtime.store`does not exist.
 
-- [ ] **Step 3: Implement the schema**
+- [x] **Step 3: Implement the schema**
 
 `SQLiteStore`stores only`Path(path)`. Every public operation opens its own connection through`_connect()`with`row_factory = sqlite3.Row`,`PRAGMA foreign_keys = ON`, and a five-second busy timeout.
 
@@ -361,7 +361,7 @@ CREATE TABLE IF NOT EXISTS events (
 
 `initialize()`also creates indexes on`tool_calls(run_id)`,`tool_calls(retry_of)`and`events(run_id, sequence)`.
 
-- [ ] **Step 4: Implement Run creation as one transaction**
+- [x] **Step 4: Implement Run creation as one transaction**
 
 `create_run()`accepts keyword-only arguments shown in the test plus optional`run_id`. Normalize`workspace`with`Path(workspace).resolve()`, generate absent IDs with`uuid.uuid4().hex`, and timestamps with UTC ISO-8601.
 
@@ -374,13 +374,13 @@ Within`BEGIN IMMEDIATE`:
 
 `list_events()`orders by`sequence`; JSON uses`sort_keys=True`when persisted and is decoded into`dict`when returned.
 
-- [ ] **Step 5: Run store tests and verify GREEN**
+- [x] **Step 5: Run store tests and verify GREEN**
 
 Run: `python -m pytest tests/runtime/test_store.py -v`
 
 Expected: 2 passed.
 
-- [ ] **Step 6: Commit schema and Run persistence**
+- [x] **Step 6: Commit schema and Run persistence**
 
 ```bash
 git add corecoder/runtime/store.py tests/runtime/test_store.py
