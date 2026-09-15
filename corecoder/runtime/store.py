@@ -291,6 +291,7 @@ class SQLiteStore:
                         {
                             "attempt": attempt,
                             "retry_of": retry_of,
+                            "tool_call_id": call.id,
                             "tool_name": tool_name,
                         },
                         sort_keys=True,
@@ -343,6 +344,8 @@ class SQLiteStore:
             if to_status in _ENDED_TOOL_CALL_STATUSES:
                 ended_at = timestamp
             summary = result_summary[:2000] if result_summary else None
+            event_payload = dict(payload or {})
+            event_payload["tool_call_id"] = tool_call_id
             connection.execute(
                 """
                 UPDATE tool_calls
@@ -377,7 +380,7 @@ class SQLiteStore:
                     row["run_id"],
                     sequence,
                     event_type,
-                    json.dumps(payload or {}, sort_keys=True),
+                    json.dumps(event_payload, sort_keys=True),
                     timestamp,
                 ),
             )

@@ -131,7 +131,14 @@ def test_create_tool_call_persists_metadata_and_event(store_with_run):
     assert call.status is ToolCallStatus.CREATED
     assert call.attempt == 1
     assert store_with_run.get_tool_call("call-1") == call
-    assert store_with_run.list_events("run-1")[-1].type == "tool.created"
+    event = store_with_run.list_events("run-1")[-1]
+    assert event.type == "tool.created"
+    assert event.payload == {
+        "attempt": 1,
+        "retry_of": None,
+        "tool_call_id": "call-1",
+        "tool_name": "bash",
+    }
 
 
 def test_retry_is_a_new_tool_call_with_lineage(store_with_run):
@@ -158,10 +165,13 @@ def test_retry_is_a_new_tool_call_with_lineage(store_with_run):
 
     assert retry.retry_of == "call-1"
     assert retry.attempt == 2
+    before = store_with_run.list_events("run-1")
     with pytest.raises(InvalidTransition):
         store_with_run.transition_tool_call(
             "call-1", ToolCallStatus.RUNNING, "tool.retry_started"
         )
+    assert store_with_run.get_tool_call("call-1").status is ToolCallStatus.FAILED
+    assert store_with_run.list_events("run-1") == before
 
 
 def test_retry_must_reference_same_run(store_with_run, tmp_path):
@@ -210,6 +220,43 @@ def test_unfinished_tool_call_cannot_be_retried(store_with_run):
 
     with pytest.raises(ValueError, match="retry source is not retryable"):
         create_test_call(store_with_run, "call-2", retry_of="call-1")
+
+
+def test_tool_transition_tracks_lifecycle_and_safe_event_identity(store_with_run):
+    create_test_call(store_with_run, "call-1")
+
+    running = store_with_run.transition_tool_call(
+        "call-1", ToolCallStatus.RUNNING, "tool.started"
+    )
+    failed = store_with_run.transition_tool_call(
+        "call-1",
+        ToolCallStatus.FAILED,
+        "tool.failed",
+        result_summary="x" * 2100,
+        payload={"exit_code": 1},
+    )
+
+    assert running.started_at is not None
+    assert running.ended_at is None
+    assert failed.ended_at is not None
+    assert failed.result_summary == "x" * 2000
+    assert store_with_run.list_events("run-1")[-1].payload == {
+        "exit_code": 1,
+        "tool_call_id": "call-1",
+    }
+
+
+def test_interrupted_tool_call_has_no_end_time(store_with_run):
+    create_test_call(store_with_run, "call-1")
+    store_with_run.transition_tool_call(
+        "call-1", ToolCallStatus.RUNNING, "tool.started"
+    )
+
+    interrupted = store_with_run.transition_tool_call(
+        "call-1", ToolCallStatus.INTERRUPTED, "tool.interrupted"
+    )
+
+    assert interrupted.ended_at is None
 
 
 def test_runtime_public_api():

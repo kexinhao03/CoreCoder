@@ -549,7 +549,7 @@ Expected: failures report missing`create_tool_call`and`transition_tool_call`.
 5. require the source to be idempotent; otherwise raise`ValueError("non-idempotent tool call cannot be auto-retried")`;
 6. set`attempt = source.attempt + 1`.
 
-Insert`tool.created`with payload containing only`tool_name`,`attempt`and`retry_of`; do not put raw arguments in the event.
+Insert`tool.created`with payload containing`tool_call_id`,`tool_name`,`attempt`and`retry_of`; do not put raw arguments in the event. Every later ToolCall transition event must also include the Store-owned`tool_call_id`, so callers cannot omit or spoof event identity.
 
 - [x] **Step 5: Implement ToolCall transitions**
 
