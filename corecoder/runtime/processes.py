@@ -74,7 +74,7 @@ class ManagedProcessRunner:
             return ProcessResult(
                 exit_code=None,
                 stdout="",
-                stderr=str(error),
+                stderr=_bound_output(str(error), spec.output_limit),
                 duration_seconds=time.monotonic() - started_at,
                 failure_kind=FailureKind.SPAWN_ERROR,
                 termination_confirmed=True,

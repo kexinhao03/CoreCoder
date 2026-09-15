@@ -112,12 +112,17 @@ def test_process_runner_passes_explicit_environment(tmp_path):
 
 def test_process_runner_classifies_spawn_error(tmp_path):
     result = ManagedProcessRunner().run(
-        make_spec(tmp_path, str(tmp_path / "missing-command")),
+        make_spec(
+            tmp_path,
+            str(tmp_path / "missing-command"),
+            output_limit=4,
+        ),
         threading.Event(),
     )
 
     assert result.exit_code is None
     assert result.stdout == ""
+    assert len(result.stderr) <= 4
     assert result.failure_kind is FailureKind.SPAWN_ERROR
     assert result.termination_confirmed is True
 
