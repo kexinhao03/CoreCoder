@@ -49,13 +49,13 @@ def summarize_arguments(arguments: dict) -> str:
 def _redact_sensitive_values(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: (
+            str(key): (
                 "[REDACTED]"
                 if any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS)
                 else _redact_sensitive_values(item)
             )
             for key, item in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_redact_sensitive_values(item) for item in value]
     return value

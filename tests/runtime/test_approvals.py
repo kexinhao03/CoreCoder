@@ -49,6 +49,24 @@ def test_argument_summary_redacts_sensitive_keys_and_is_bounded():
     }
 
 
+def test_argument_summary_redacts_sensitive_keys_nested_in_tuples():
+    arguments = {"items": ({"password": "hidden"},)}
+
+    summary = summarize_arguments(arguments)
+
+    assert summary == '{"items": [{"password": "[REDACTED]"}]}'
+    assert arguments == {"items": ({"password": "hidden"},)}
+
+
+def test_argument_summary_normalizes_mixed_basic_key_types():
+    arguments = {"alpha": "value", 1: "one"}
+
+    summary = summarize_arguments(arguments)
+
+    assert summary == '{"1": "one", "alpha": "value"}'
+    assert arguments == {"alpha": "value", 1: "one"}
+
+
 def test_approval_values_are_stable():
     assert ApprovalStatus.PENDING.value == "pending"
     assert ApprovalDecision.ALLOW_ONCE.value == "allow_once"
