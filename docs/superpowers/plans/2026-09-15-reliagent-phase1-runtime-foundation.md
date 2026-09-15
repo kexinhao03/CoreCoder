@@ -50,7 +50,7 @@
 - Produces: `RunStatus`, `ToolCallStatus`, `RiskLevel`, `ExecutionKind`, `InvalidTransition`, `ensure_run_transition()`, `ensure_tool_call_transition()`.
 - Consumes: Python标准库`enum.StrEnum`不可用于Python 3.10，因此使用`class X(str, Enum)`。
 
-- [ ] **Step 1: Write failing tests for allowed and rejected transitions**
+- [x] **Step 1: Write failing tests for allowed and rejected transitions**
 
 ```python
 import pytest
@@ -83,13 +83,13 @@ def test_terminal_tool_call_cannot_be_retried_in_place():
         ensure_tool_call_transition(ToolCallStatus.FAILED, ToolCallStatus.RUNNING)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `python -m pytest tests/runtime/test_state.py -v`
 
 Expected: collection fails with `ModuleNotFoundError: No module named 'corecoder.runtime'`.
 
-- [ ] **Step 3: Implement the minimal state module**
+- [x] **Step 3: Implement the minimal state module**
 
 Use these exact enum values:
 
@@ -131,13 +131,13 @@ Define explicit transition maps. `INTERRUPTED` may move only to`SUCCEEDED`,`FAIL
 
 `InvalidTransition` must subclass`ValueError`; both guard functions return`None` for an allowed transition and raise with text`"invalid <entity> transition: <from> -> <to>"` otherwise.
 
-- [ ] **Step 4: Run state tests and verify GREEN**
+- [x] **Step 4: Run state tests and verify GREEN**
 
 Run: `python -m pytest tests/runtime/test_state.py -v`
 
 Expected: 4 passed.
 
-- [ ] **Step 5: Commit the state contract**
+- [x] **Step 5: Commit the state contract**
 
 ```bash
 git add corecoder/runtime/state.py tests/runtime/__init__.py tests/runtime/test_state.py
