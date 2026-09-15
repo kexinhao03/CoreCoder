@@ -59,12 +59,21 @@ def test_argument_summary_redacts_sensitive_keys_nested_in_tuples():
 
 
 def test_argument_summary_normalizes_mixed_basic_key_types():
-    arguments = {"alpha": "value", 1: "one"}
+    arguments = {1: "integer", "1": "string"}
 
     summary = summarize_arguments(arguments)
 
-    assert summary == '{"1": "one", "alpha": "value"}'
-    assert arguments == {"alpha": "value", 1: "one"}
+    assert summary == '{"1": "string", "[int:1]": "integer"}'
+    assert arguments == {1: "integer", "1": "string"}
+
+
+def test_argument_summary_suffixes_colliding_typed_key_labels():
+    arguments = {1: "integer", "[int:1]": "string"}
+
+    summary = summarize_arguments(arguments)
+
+    assert summary == '{"[int:1]": "string", "[int:1]#2": "integer"}'
+    assert arguments == {1: "integer", "[int:1]": "string"}
 
 
 def test_approval_values_are_stable():
