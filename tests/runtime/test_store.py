@@ -210,3 +210,32 @@ def test_unfinished_tool_call_cannot_be_retried(store_with_run):
 
     with pytest.raises(ValueError, match="retry source is not retryable"):
         create_test_call(store_with_run, "call-2", retry_of="call-1")
+
+
+def test_runtime_public_api():
+    from corecoder.runtime import (
+        EventRecord,
+        ExecutionKind,
+        InvalidTransition,
+        RiskLevel,
+        RunRecord,
+        RunStatus,
+        SQLiteStore,
+        ToolCallRecord,
+        ToolCallStatus,
+    )
+
+    assert SQLiteStore is not None
+    assert RunStatus.CREATED.value == "created"
+    assert ToolCallStatus.INTERRUPTED.value == "interrupted"
+    assert all(
+        value is not None
+        for value in (
+            EventRecord,
+            ExecutionKind,
+            InvalidTransition,
+            RiskLevel,
+            RunRecord,
+            ToolCallRecord,
+        )
+    )

@@ -585,7 +585,7 @@ git commit -m "feat(runtime): persist tool-call attempts and retries"
 - Consumes: all Phase 1 modules.
 - Produces: importable public API from`corecoder.runtime`; no top-level`corecoder.__init__`change yet.
 
-- [ ] **Step 1: Write a failing public API test**
+- [x] **Step 1: Write a failing public API test**
 
 ```python
 def test_runtime_public_api():
@@ -610,23 +610,23 @@ def test_runtime_public_api():
     ))
 ```
 
-- [ ] **Step 2: Run the public API test and verify RED**
+- [x] **Step 2: Run the public API test and verify RED**
 
 Run: `python -m pytest tests/runtime/test_store.py::test_runtime_public_api -v`
 
 Expected: import failure because`corecoder.runtime.__init__`does not export these names.
 
-- [ ] **Step 3: Add explicit exports**
+- [x] **Step 3: Add explicit exports**
 
 Import each symbol from`models.py`,`state.py`and`store.py`; define`__all__`with the exact nine names used by the test. Do not modify`corecoder/__init__.py`in this phase.
 
-- [ ] **Step 4: Run Phase 1 tests**
+- [x] **Step 4: Run Phase 1 tests**
 
 Run: `python -m pytest tests/runtime/ -v`
 
 Expected: all Phase 1 tests pass.
 
-- [ ] **Step 5: Run repository regression checks**
+- [x] **Step 5: Run repository regression checks**
 
 ```bash
 python -m pytest tests/ -v
@@ -636,7 +636,7 @@ ruff check corecoder tests
 
 Expected: pytest reports zero failures, compileall exits0, and ruff reports no violations. If a pre-existing user change fails a check, record the exact failure separately and do not modify that unrelated change.
 
-- [ ] **Step 6: Commit Phase 1 exports**
+- [x] **Step 6: Commit Phase 1 exports**
 
 ```bash
 git add corecoder/runtime/__init__.py tests/runtime/test_store.py
