@@ -156,7 +156,7 @@ git commit -m "feat(runtime): define run and tool-call states"
 - Consumes: enum types from Task 1.
 - Produces: frozen dataclasses `RunRecord`, `ToolCallRecord`, `EventRecord`.
 
-- [ ] **Step 1: Write failing model tests**
+- [x] **Step 1: Write failing model tests**
 
 ```python
 from dataclasses import FrozenInstanceError
@@ -192,13 +192,13 @@ def test_event_payload_is_decoded_data():
     assert event.payload == {"source": "cli"}
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `python -m pytest tests/runtime/test_models.py -v`
 
 Expected: import fails because `corecoder.runtime.models` does not exist.
 
-- [ ] **Step 3: Implement frozen dataclasses with exact fields**
+- [x] **Step 3: Implement frozen dataclasses with exact fields**
 
 ```python
 @dataclass(frozen=True)
@@ -245,13 +245,13 @@ class EventRecord:
     created_at: str
 ```
 
-- [ ] **Step 4: Run model tests and verify GREEN**
+- [x] **Step 4: Run model tests and verify GREEN**
 
 Run: `python -m pytest tests/runtime/test_models.py -v`
 
 Expected: 3 passed.
 
-- [ ] **Step 5: Commit the record models**
+- [x] **Step 5: Commit the record models**
 
 ```bash
 git add corecoder/runtime/models.py tests/runtime/test_models.py
