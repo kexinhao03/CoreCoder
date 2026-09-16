@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
 from .models import EventRecord, RunRecord, ToolCallRecord
+from .policies import ToolPolicyRegistry
 from .state import (
     ExecutionKind,
     RiskLevel,
@@ -186,6 +188,10 @@ class SQLiteStore:
             ).fetchone()
         if row is None:
             raise KeyError(run_id)
+        return self._run_from_row(row)
+
+    @staticmethod
+    def _run_from_row(row: sqlite3.Row) -> RunRecord:
         return RunRecord(
             id=row["id"],
             goal=row["goal"],
@@ -197,6 +203,247 @@ class SQLiteStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    def list_runs(
+        self, statuses: Iterable[RunStatus] | None = None
+    ) -> list[RunRecord]:
+        values = None if statuses is None else [RunStatus(s).value for s in statuses]
+        if values == []:
+            return []
+        query = "SELECT * FROM runs"
+        if values is not None:
+            query += " WHERE status IN (" + ",".join("?" for _ in values) + ")"
+        with self._connect() as connection:
+            rows = connection.execute(query + " ORDER BY created_at, id", values or []).fetchall()
+        return [self._run_from_row(row) for row in rows]
+
+    def list_tool_calls(
+        self,
+        run_id: str | None = None,
+        statuses: Iterable[ToolCallStatus] | None = None,
+    ) -> list[ToolCallRecord]:
+        values = None if statuses is None else [ToolCallStatus(s).value for s in statuses]
+        if values == []:
+            return []
+        clauses = []
+        parameters = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            parameters.append(run_id)
+        if values is not None:
+            clauses.append("status IN (" + ",".join("?" for _ in values) + ")")
+            parameters.extend(values)
+        query = "SELECT * FROM tool_calls"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self._connect() as connection:
+            rows = connection.execute(query + " ORDER BY created_at, id", parameters).fetchall()
+        return [self._tool_call_from_row(row) for row in rows]
+
+    def _recovery_records(
+        self, connection: sqlite3.Connection, call_id: str
+    ) -> tuple[RunRecord, ToolCallRecord]:
+        row = connection.execute("SELECT * FROM tool_calls WHERE id = ?", (call_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"tool call not found: {call_id}")
+        run_row = connection.execute("SELECT * FROM runs WHERE id = ?", (row["run_id"],)).fetchone()
+        return self._run_from_row(run_row), self._tool_call_from_row(row)
+
+    @staticmethod
+    def _interruption_reason(
+        connection: sqlite3.Connection, call: ToolCallRecord
+    ) -> str | None:
+        rows = connection.execute(
+            "SELECT payload_json FROM events WHERE run_id = ? AND type = ? ORDER BY sequence DESC",
+            (call.run_id, "tool.interrupted"),
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            if payload.get("tool_call_id") == call.id:
+                return payload.get("reason")
+        return None
+
+    def get_interruption_reason(self, call_id: str) -> str | None:
+        with self._connect() as connection:
+            _, call = self._recovery_records(connection, call_id)
+            return self._interruption_reason(connection, call)
+
+    def mark_orphaned_tool_call(self, call_id: str) -> tuple[RunRecord, ToolCallRecord]:
+        """Atomically record a startup orphan without reviving a cancelled Run."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            run, call = self._recovery_records(connection, call_id)
+            if call.status is not ToolCallStatus.RUNNING:
+                raise ValueError("orphaned tool call must be running")
+            ensure_tool_call_transition(call.status, ToolCallStatus.INTERRUPTED)
+            if run.status not in {RunStatus.CANCELLED, RunStatus.RECOVERABLE}:
+                ensure_run_transition(run.status, RunStatus.RECOVERABLE)
+                connection.execute(
+                    "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                    (RunStatus.RECOVERABLE.value, timestamp, run.id),
+                )
+            connection.execute(
+                "UPDATE tool_calls SET status = ?, updated_at = ? WHERE id = ?",
+                (ToolCallStatus.INTERRUPTED.value, timestamp, call.id),
+            )
+            self._insert_event(
+                connection, run_id=run.id, sequence=self._next_event_sequence(connection, run.id),
+                event_type="tool.interrupted",
+                payload={"tool_call_id": call.id, "reason": "process_lost"}, created_at=timestamp,
+            )
+            updated = self._recovery_records(connection, call_id)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return updated
+
+    def mark_interrupted_run_recoverable(self, call_id: str) -> tuple[RunRecord, ToolCallRecord]:
+        """Normalize a previously interrupted call's Run once, preserving its cause."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            run, call = self._recovery_records(connection, call_id)
+            if call.status is not ToolCallStatus.INTERRUPTED:
+                raise ValueError("recovery requires an interrupted tool call")
+            if run.status in {RunStatus.RUNNING, RunStatus.WAITING_APPROVAL}:
+                ensure_run_transition(run.status, RunStatus.RECOVERABLE)
+                connection.execute(
+                    "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                    (RunStatus.RECOVERABLE.value, timestamp, run.id),
+                )
+                self._insert_event(
+                    connection, run_id=run.id, sequence=self._next_event_sequence(connection, run.id),
+                    event_type="run.recoverable", payload={"tool_call_id": call.id},
+                    created_at=timestamp,
+                )
+            updated = self._recovery_records(connection, call_id)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return updated
+
+    def _resolve_recovery(
+        self, connection: sqlite3.Connection, run: RunRecord, call: ToolCallRecord,
+        status: ToolCallStatus, resolution: str, timestamp: str, reason: str | None = None,
+    ) -> None:
+        if call.status is not ToolCallStatus.INTERRUPTED:
+            raise ValueError("recovery requires an interrupted tool call")
+        ensure_tool_call_transition(call.status, status)
+        if run.status is not RunStatus.CANCELLED and run.status is not RunStatus.RUNNING:
+            ensure_run_transition(run.status, RunStatus.RUNNING)
+            connection.execute(
+                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                (RunStatus.RUNNING.value, timestamp, run.id),
+            )
+        connection.execute(
+            "UPDATE tool_calls SET status = ?, updated_at = ?, ended_at = ?, result_summary = ? WHERE id = ?",
+            (status.value, timestamp, timestamp, reason or call.result_summary, call.id),
+        )
+        payload = {"tool_call_id": call.id, "resolution": resolution}
+        if reason is not None:
+            payload["reason"] = reason
+        self._insert_event(
+            connection, run_id=run.id, sequence=self._next_event_sequence(connection, run.id),
+            event_type="recovery.resolved", payload=payload, created_at=timestamp,
+        )
+
+    def resume_recovery_retry(
+        self, expected_run: RunRecord, expected_call: ToolCallRecord, registry: ToolPolicyRegistry,
+    ) -> ToolCallRecord:
+        """Validate, resolve, and reserve a safe new attempt in one transaction."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        retry_id = uuid.uuid4().hex
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            run, call = self._recovery_records(connection, expected_call.id)
+            if run != expected_run or call != expected_call:
+                raise ValueError("stale or mismatched recovery candidate")
+            policy = registry.resolve(call.tool_name)
+            if not (
+                run.status is RunStatus.RECOVERABLE
+                and call.status is ToolCallStatus.INTERRUPTED
+                and call.risk_level is RiskLevel.READ_ONLY and call.idempotent
+                and policy.risk_level is RiskLevel.READ_ONLY and policy.idempotent
+                and policy.auto_retry and call.attempt < policy.max_attempts
+                and self._interruption_reason(connection, call) == "process_lost"
+            ):
+                raise ValueError("recovery retry is not safe or permitted")
+            active = connection.execute(
+                "SELECT id FROM tool_calls WHERE run_id = ? AND status IN (?, ?, ?) LIMIT 1",
+                (run.id, ToolCallStatus.CREATED.value, ToolCallStatus.WAITING_APPROVAL.value,
+                 ToolCallStatus.RUNNING.value),
+            ).fetchone()
+            if active is not None:
+                raise ValueError("run already has an active tool call")
+            self._resolve_recovery(
+                connection, run, call, ToolCallStatus.FAILED, "confirmed_failed", timestamp,
+                reason="process_lost",
+            )
+            self._insert_event(
+                connection, run_id=run.id, sequence=self._next_event_sequence(connection, run.id),
+                event_type="tool.retry_scheduled",
+                payload={"tool_call_id": retry_id, "retry_of": call.id, "attempt": call.attempt + 1},
+                created_at=timestamp,
+            )
+            connection.execute(
+                """
+                INSERT INTO tool_calls (
+                    id, run_id, retry_of, tool_name, arguments_json, risk_level,
+                    execution_kind, idempotent, idempotency_key, status, attempt,
+                    timeout_seconds, created_at, updated_at
+                ) SELECT ?, run_id, id, tool_name, arguments_json, risk_level,
+                    execution_kind, idempotent, idempotency_key, ?, attempt + 1,
+                    timeout_seconds, ?, ? FROM tool_calls WHERE id = ?
+                """,
+                (retry_id, ToolCallStatus.CREATED.value, timestamp, timestamp, call.id),
+            )
+            self._insert_event(
+                connection, run_id=run.id, sequence=self._next_event_sequence(connection, run.id),
+                event_type="tool.created",
+                payload={"tool_call_id": retry_id, "retry_of": call.id, "attempt": call.attempt + 1,
+                         "tool_name": call.tool_name}, created_at=timestamp,
+            )
+            _, retry = self._recovery_records(connection, retry_id)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return retry
+
+    def reconcile_interrupted_tool_call(
+        self, call_id: str, status: ToolCallStatus, resolution: str,
+    ) -> ToolCallRecord:
+        """Commit a human resolution and Run/event changes, never another attempt."""
+        resolutions = {"confirmed_succeeded": ToolCallStatus.SUCCEEDED,
+                       "confirmed_failed": ToolCallStatus.FAILED, "abandon": ToolCallStatus.CANCELLED}
+        if resolutions.get(resolution) is not status:
+            raise ValueError("invalid recovery resolution")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            run, call = self._recovery_records(connection, call_id)
+            self._resolve_recovery(connection, run, call, status, resolution, timestamp)
+            _, updated = self._recovery_records(connection, call_id)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return updated
 
     def create_tool_call(
         self,
