@@ -353,3 +353,293 @@ def test_corrupt_persisted_argv_is_refused_before_start(running_store, arguments
     assert running_store.list_events("run-1") == before
     assert executor._active_cancellations == {}
     assert runner.calls == []
+
+
+def inspect_registry():
+    return ToolPolicyRegistry({
+        "inspect": ToolPolicy(
+            risk_level=RiskLevel.READ_ONLY,
+            execution_kind=ExecutionKind.IN_PROCESS,
+            timeout_seconds=2, max_attempts=1, idempotent=True,
+            auto_retry=False, retryable_failures=frozenset(), output_limit=1000,
+        )
+    })
+
+
+def test_in_process_operation_receives_persisted_arguments(running_store):
+    seen = []
+    executor = RuntimeExecutor(running_store, inspect_registry())
+
+    def operation(arguments, cancel_event):
+        observer = SQLiteStore(running_store.path)
+        assert observer.get_tool_call("call-1").status is ToolCallStatus.RUNNING
+        assert observer.list_events("run-1")[-1].type == "tool.started"
+        assert executor._active_cancellations["call-1"] is cancel_event
+        seen.append((arguments, cancel_event.is_set()))
+        return "inspected"
+
+    result = executor.submit_in_process(
+        "run-1", "inspect", {"path": "README.md"}, operation, tool_call_id="call-1"
+    )
+    assert result.call.status is ToolCallStatus.SUCCEEDED
+    assert seen == [({"path": "README.md"}, False)]
+    assert result.output == result.call.result_summary == "inspected"
+    assert result.call == running_store.get_tool_call("call-1")
+    assert result.failure_kind is None
+    assert executor._active_cancellations == {}
+
+
+def test_in_process_exception_is_a_failed_execution(running_store):
+    def operation(arguments, cancel_event):
+        raise RuntimeError("boom")
+
+    executor = RuntimeExecutor(running_store, inspect_registry())
+    result = executor.submit_in_process(
+        "run-1", "inspect", {}, operation, tool_call_id="call-1"
+    )
+    assert result.call.status is ToolCallStatus.FAILED
+    assert result.failure_kind is FailureKind.EXECUTION_ERROR
+    assert result.output == result.call.result_summary == "boom"
+    assert running_store.list_events("run-1")[-1].payload == {
+        "tool_call_id": "call-1", "failure_kind": "execution_error"
+    }
+    assert executor._active_cancellations == {}
+
+
+def test_blocking_in_process_callable_has_no_forced_timeout(running_store):
+    registry = ToolPolicyRegistry.with_builtin_defaults()
+    executor = RuntimeExecutor(running_store, registry)
+    seen = []
+    caller_thread = threading.get_ident()
+
+    def operation(arguments, cancel_event):
+        assert threading.get_ident() == caller_thread
+        seen.append(arguments)
+        return "written"
+
+    arguments = {"path": "README.md", "content": "approved"}
+    pending = executor.submit_in_process(
+        "run-1", "write_file", arguments, operation,
+        tool_call_id="call-1", approval_id="approval-1",
+    )
+    assert isinstance(pending, PendingApproval)
+    assert pending.call.status is ToolCallStatus.WAITING_APPROVAL
+    assert seen == []
+    arguments["content"] = "replacement"
+    pending.call.arguments["content"] = "replacement"
+    running_store.resolve_approval("approval-1", ApprovalDecision.ALLOW_ONCE)
+    restarted = RuntimeExecutor(SQLiteStore(running_store.path), registry)
+    result = restarted.execute_approved_in_process("call-1", operation)
+    assert result.call.status is ToolCallStatus.SUCCEEDED
+    assert seen == [{"path": "README.md", "content": "approved"}]
+    with pytest.raises(ExecutionRefused):
+        restarted.execute_approved_in_process("call-1", operation)
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize("decision", [None, ApprovalDecision.DENY])
+def test_in_process_requires_approval_bound_to_call(running_store, decision):
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry.with_builtin_defaults())
+    seen = []
+
+    def operation(arguments, cancel_event):
+        seen.append(arguments)
+        return "unused"
+
+    executor.submit_in_process(
+        "run-1", "write_file", {}, operation,
+        tool_call_id="call-1", approval_id="approval-1",
+    )
+    if decision:
+        running_store.resolve_approval("approval-1", decision)
+    before = running_store.list_events("run-1")
+    for call_id in ("call-1", "other-call"):
+        with pytest.raises(ExecutionRefused):
+            executor.execute_approved_in_process(call_id, operation)
+    assert running_store.list_events("run-1") == before
+    assert seen == []
+
+
+@pytest.mark.parametrize("cancel_before", [True, False])
+def test_in_process_cooperative_cancellation(running_store, monkeypatch, cancel_before):
+    cancellation = threading.Event()
+    seen = []
+    if cancel_before:
+        cancellation.set()
+        monkeypatch.setattr("corecoder.runtime.executor.threading.Event", lambda: cancellation)
+
+    def operation(arguments, cancel_event):
+        seen.append(arguments)
+        cancel_event.set()
+        return "partial"
+
+    executor = RuntimeExecutor(running_store, inspect_registry())
+    result = executor.submit_in_process(
+        "run-1", "inspect", {}, operation, tool_call_id="call-1"
+    )
+    assert result.call.status is ToolCallStatus.CANCELLED
+    assert result.failure_kind is FailureKind.CANCELLED
+    assert seen == ([] if cancel_before else [{}])
+    assert running_store.list_events("run-1")[-1].type == "tool.cancelled"
+    assert executor._active_cancellations == {}
+
+
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit])
+def test_in_process_base_exception_propagates_and_cleans_registration(running_store, exception):
+    def operation(arguments, cancel_event):
+        raise exception()
+
+    executor = RuntimeExecutor(running_store, inspect_registry())
+    with pytest.raises(exception):
+        executor.submit_in_process("run-1", "inspect", {}, operation, tool_call_id="call-1")
+    assert running_store.get_tool_call("call-1").status is ToolCallStatus.RUNNING
+    assert running_store.list_events("run-1")[-1].type == "tool.started"
+    assert executor._active_cancellations == {}
+
+
+def test_in_process_output_is_bounded(running_store):
+    executor = RuntimeExecutor(running_store, inspect_registry())
+    result = executor.submit_in_process("run-1", "inspect", {}, lambda args, event: "x" * 1200)
+    assert result.output == result.call.result_summary == "x" * 1000
+
+
+@pytest.mark.parametrize("state", [RunStatus.PAUSED, RunStatus.SUCCEEDED])
+def test_in_process_refuses_nonrunning_run(running_store, state):
+    running_store.transition_run("run-1", state, "run.stopped")
+    executor = RuntimeExecutor(running_store, inspect_registry())
+    before = running_store.list_events("run-1")
+    with pytest.raises(ExecutionRefused, match="running"):
+        executor.submit_in_process("run-1", "inspect", {}, lambda args, event: "unused")
+    assert running_store.list_events("run-1") == before
+
+
+def test_in_process_refuses_subprocess_policy(running_store):
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry.with_builtin_defaults())
+    before = running_store.list_events("run-1")
+    with pytest.raises(ExecutionRefused, match="in-process"):
+        executor.submit_in_process("run-1", "bash", {}, lambda args, event: "unused")
+    assert running_store.list_events("run-1") == before
+
+
+class SequenceRunner:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def run(self, spec, cancel_event):
+        self.calls.append(spec)
+        return self.results.pop(0)
+
+
+def timeout_result():
+    return ProcessResult(
+        exit_code=None, stdout="", stderr="timeout", duration_seconds=0.1,
+        failure_kind=FailureKind.TIMED_OUT, termination_confirmed=True,
+    )
+
+
+def test_retryable_timeout_creates_a_new_attempt(running_store):
+    runner = SequenceRunner([timeout_result(), success_result("ok")])
+    policy = probe_policy(
+        max_attempts=2, auto_retry=True,
+        retryable_failures=frozenset({FailureKind.TIMED_OUT}),
+    )
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": policy}), runner)
+    result = executor.submit_subprocess(
+        "run-1", "probe", (sys.executable, "-c", "print('ok')"), tool_call_id="call-1"
+    )
+    assert len(runner.calls) == 2
+    source = running_store.get_tool_call("call-1")
+    assert source.status is ToolCallStatus.TIMED_OUT
+    assert result.call.status is ToolCallStatus.SUCCEEDED
+    assert result.call.attempt == 2
+    assert result.call.retry_of == "call-1"
+    assert result.call.id != source.id
+    assert result.call.arguments == source.arguments
+    assert result.call.idempotency_key == source.idempotency_key
+    assert result.call.timeout_seconds == source.timeout_seconds
+    assert runner.calls[0] == runner.calls[1]
+    assert [event.type for event in running_store.list_events("run-1")][-5:] == [
+        "tool.timed_out", "tool.retry_scheduled", "tool.created", "tool.started", "tool.completed"
+    ]
+
+
+def test_nonzero_exit_is_not_retried(running_store):
+    runner = SequenceRunner([ProcessResult(
+        1, "", "failed", 0.1, FailureKind.NONZERO_EXIT, True,
+    )])
+    policy = probe_policy(
+        max_attempts=2, auto_retry=True,
+        retryable_failures=frozenset({FailureKind.TIMED_OUT}),
+    )
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": policy}), runner)
+    result = executor.submit_subprocess("run-1", "probe", ("command",))
+    assert result.call.status is ToolCallStatus.FAILED
+    assert len(runner.calls) == 1
+    assert "tool.retry_scheduled" not in [e.type for e in running_store.list_events("run-1")]
+
+
+def test_retry_stops_at_max_attempts(running_store):
+    runner = SequenceRunner([timeout_result(), timeout_result()])
+    policy = probe_policy(
+        max_attempts=2, auto_retry=True,
+        retryable_failures=frozenset({FailureKind.TIMED_OUT}),
+    )
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": policy}), runner)
+    result = executor.submit_subprocess("run-1", "probe", ("command",))
+    assert len(runner.calls) == 2
+    assert result.call.attempt == 2
+    assert result.call.status is ToolCallStatus.TIMED_OUT
+
+
+@pytest.mark.parametrize("kind", [FailureKind.CANCELLED, FailureKind.TERMINATION_UNKNOWN])
+def test_retry_refuses_cancelled_or_unknown_outcome(running_store, kind):
+    runner = SequenceRunner([ProcessResult(None, "", "", 0.1, kind, False)])
+    policy = probe_policy(max_attempts=2, auto_retry=True, retryable_failures=frozenset({kind}))
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": policy}), runner)
+    result = executor.submit_subprocess("run-1", "probe", ("command",))
+    assert result.call.attempt == 1
+    assert len(runner.calls) == 1
+
+
+def test_retry_requires_auto_retry_policy(running_store):
+    runner = SequenceRunner([timeout_result()])
+    policy = probe_policy(max_attempts=2, retryable_failures=frozenset({FailureKind.TIMED_OUT}))
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": policy}), runner)
+    result = executor.submit_subprocess("run-1", "probe", ("command",))
+    assert result.call.attempt == 1
+    assert len(runner.calls) == 1
+
+
+def test_retry_requires_persisted_source_idempotence(running_store):
+    runner = SequenceRunner([timeout_result()])
+    original = RuntimeExecutor(running_store, ToolPolicyRegistry.with_builtin_defaults(), runner)
+    original.submit_subprocess(
+        "run-1", "bash", ("command",), tool_call_id="call-1", approval_id="approval-1"
+    )
+    running_store.resolve_approval("approval-1", ApprovalDecision.ALLOW_ONCE)
+    policy = probe_policy(
+        max_attempts=2, auto_retry=True, retryable_failures=frozenset({FailureKind.TIMED_OUT})
+    )
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"bash": policy}), runner)
+    result = executor.execute_approved_subprocess("call-1")
+    assert not result.call.idempotent
+    assert result.call.attempt == 1
+    assert len(runner.calls) == 1
+
+
+def test_retry_requires_running_run(running_store):
+    class PausingRunner(SequenceRunner):
+        def run(self, spec, cancel_event):
+            running_store.transition_run("run-1", RunStatus.PAUSED, "run.paused")
+            return super().run(spec, cancel_event)
+
+    runner = PausingRunner([timeout_result()])
+    policy = probe_policy(
+        max_attempts=2, auto_retry=True, retryable_failures=frozenset({FailureKind.TIMED_OUT})
+    )
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": policy}), runner)
+    result = executor.submit_subprocess("run-1", "probe", ("command",))
+    assert result.call.attempt == 1
+    assert len(runner.calls) == 1
+    assert "tool.retry_scheduled" not in [e.type for e in running_store.list_events("run-1")]
