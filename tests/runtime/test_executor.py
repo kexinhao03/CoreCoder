@@ -2,6 +2,7 @@ import json
 import sqlite3
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import pytest
 from corecoder.runtime.approvals import ApprovalDecision, ApprovalStatus
 from corecoder.runtime.executor import ExecutionRefused, PendingApproval, RuntimeExecutor
 from corecoder.runtime.policies import FailureKind, ToolPolicy, ToolPolicyRegistry
-from corecoder.runtime.processes import ProcessResult
+from corecoder.runtime.processes import ManagedProcessRunner, ProcessResult
 from corecoder.runtime.state import ExecutionKind, RiskLevel, RunStatus, ToolCallStatus
 from corecoder.runtime.store import SQLiteStore
 
@@ -45,6 +46,197 @@ def probe_policy(**overrides):
     }
     values.update(overrides)
     return ToolPolicy(**values)
+
+
+def wait_until(predicate, timeout):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise AssertionError("condition not reached")
+        time.sleep(0.01)
+
+
+def test_cancel_run_settles_waiting_call_without_spawn(running_store):
+    runner = SpyRunner(success_result("unused"))
+    executor = RuntimeExecutor(
+        running_store, ToolPolicyRegistry.with_builtin_defaults(), runner
+    )
+    executor.submit_subprocess(
+        "run-1", "bash", (sys.executable, "-c", "print('no')"),
+        tool_call_id="call-1", approval_id="approval-1",
+    )
+    executor.cancel_run("run-1")
+    assert running_store.get_run("run-1").status is RunStatus.CANCELLED
+    assert running_store.get_tool_call("call-1").status is ToolCallStatus.CANCELLED
+    assert runner.calls == []
+    with pytest.raises(ExecutionRefused, match="run cannot accept work: cancelled"):
+        executor.submit_subprocess(
+            "run-1", "bash", (sys.executable, "-c", "print('no')")
+        )
+
+
+def test_cancel_run_stops_active_process(running_store, tmp_path):
+    marker = tmp_path / "started"
+    executor = RuntimeExecutor(
+        running_store, ToolPolicyRegistry({"probe": probe_policy()}),
+        ManagedProcessRunner(),
+    )
+    result_box = []
+    worker = threading.Thread(
+        target=lambda: result_box.append(executor.submit_subprocess(
+            "run-1", "probe",
+            (sys.executable, "-c",
+             f"open({str(marker)!r}, 'w').close(); import time; time.sleep(10)"),
+            tool_call_id="call-1",
+        ))
+    )
+    worker.start()
+    try:
+        wait_until(lambda: marker.exists(), timeout=1)
+        executor.cancel_run("run-1")
+        worker.join(timeout=2)
+        assert worker.is_alive() is False
+        assert result_box[0].call.status is ToolCallStatus.CANCELLED
+        assert running_store.get_run("run-1").status is RunStatus.CANCELLED
+    finally:
+        # The policy's two-second deadline bounds cleanup even on a RED failure.
+        worker.join(timeout=5)
+
+
+@pytest.mark.parametrize("in_process", [False, True])
+def test_cancel_between_started_commit_and_registration_never_invokes(
+    running_store, monkeypatch, in_process
+):
+    runner = SpyRunner(success_result("must not run"))
+    executor = RuntimeExecutor(
+        running_store, inspect_registry() if in_process else
+        ToolPolicyRegistry({"probe": probe_policy()}), runner,
+    )
+    original_transition = running_store.transition_tool_call
+
+    def cancel_after_start(*args, **kwargs):
+        call = original_transition(*args, **kwargs)
+        if call.status is ToolCallStatus.RUNNING:
+            executor.cancel_run("run-1")
+        return call
+
+    monkeypatch.setattr(running_store, "transition_tool_call", cancel_after_start)
+    invoked = []
+    if in_process:
+        result = executor.submit_in_process(
+            "run-1", "inspect", {}, lambda args, event: invoked.append(args),
+            tool_call_id="call-1",
+        )
+    else:
+        result = executor.submit_subprocess("run-1", "probe", ("unused",), tool_call_id="call-1")
+    assert result.call.status is ToolCallStatus.CANCELLED
+    assert result.failure_kind is FailureKind.CANCELLED
+    assert invoked == runner.calls == []
+    assert executor._active_cancellations == {}
+
+
+@pytest.mark.parametrize("boundary", ["create_tool_call", "request_approval", "transition_tool_call"])
+def test_submit_translates_cancellation_admission_race(running_store, monkeypatch, boundary):
+    runner = SpyRunner(success_result("must not run"))
+    executor = RuntimeExecutor(
+        running_store, ToolPolicyRegistry({"probe": probe_policy(),
+                                         "bash": probe_policy(risk_level=RiskLevel.MUTATING)}),
+        runner,
+    )
+    original = getattr(running_store, boundary)
+
+    def cancel_before_admission(*args, **kwargs):
+        executor.cancel_run("run-1")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(running_store, boundary, cancel_before_admission)
+    with pytest.raises(ExecutionRefused, match="run cannot accept work: cancelled"):
+        executor.submit_subprocess(
+            "run-1", "bash" if boundary == "request_approval" else "probe", ("unused",)
+        )
+    assert runner.calls == []
+
+
+def test_cancel_run_signals_only_its_active_callable_after_commit(running_store):
+    running_store.create_run(
+        goal="other", workflow="test", workspace=running_store.path.parent,
+        model="test", prompt_version="v1", run_id="run-2",
+    )
+    running_store.transition_run("run-2", RunStatus.RUNNING, "run.started")
+    executor = RuntimeExecutor(running_store, inspect_registry())
+    ready = {run_id: threading.Event() for run_id in ("run-1", "run-2")}
+    release = threading.Event()
+    events = {}
+
+    def operation(arguments, cancellation):
+        run_id = arguments["run_id"]
+        events[run_id] = cancellation
+        ready[run_id].set()
+        assert release.wait(timeout=2)
+        return "partial" if cancellation.is_set() else "done"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        workers = [pool.submit(executor.submit_in_process, run_id, "inspect",
+                               {"run_id": run_id}, operation)
+                   for run_id in ready]
+        try:
+            assert all(event.wait(timeout=1) for event in ready.values())
+            executor.cancel_run("run-1")
+            assert events["run-1"].is_set()
+            assert not events["run-2"].is_set()
+            assert running_store.get_run("run-1").status is RunStatus.CANCELLED
+        finally:
+            release.set()
+        assert workers[0].result().call.status is ToolCallStatus.CANCELLED
+        assert workers[1].result().call.status is ToolCallStatus.SUCCEEDED
+    assert executor._active_cancellations == {}
+
+
+@pytest.mark.parametrize(("process_result", "status"), [
+    (success_result("confirmed effect"), ToolCallStatus.SUCCEEDED),
+    (ProcessResult(None, "", "", 0.1, FailureKind.TERMINATION_UNKNOWN, False),
+     ToolCallStatus.INTERRUPTED),
+    (ProcessResult(None, "", "", 0.1, FailureKind.TIMED_OUT, True), ToolCallStatus.TIMED_OUT),
+])
+def test_cancel_preserves_process_outcome_without_retry(running_store, process_result, status):
+    class CancelOnReturnRunner(SpyRunner):
+        def run(self, spec, cancel_event):
+            executor.cancel_run("run-1")
+            assert cancel_event.is_set()
+            return super().run(spec, cancel_event)
+
+    runner = CancelOnReturnRunner(process_result)
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": probe_policy(
+        max_attempts=2, auto_retry=True, retryable_failures=frozenset({FailureKind.TIMED_OUT}),
+    )}), runner)
+    result = executor.submit_subprocess("run-1", "probe", ("command",))
+    assert result.call.status is status
+    assert result.output == process_result.stdout
+    assert result.failure_kind is process_result.failure_kind
+    assert len(runner.calls) == 1
+    assert "tool.retry_scheduled" not in [e.type for e in running_store.list_events("run-1")]
+
+
+def test_cancel_before_retry_admission_is_refused_without_another_invocation(
+    running_store, monkeypatch
+):
+    runner = SequenceRunner([timeout_result(), success_result("must not run")])
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": probe_policy(
+        max_attempts=2, auto_retry=True, retryable_failures=frozenset({FailureKind.TIMED_OUT}),
+    )}), runner)
+    original_create = running_store.create_tool_call
+
+    def cancel_before_retry(**kwargs):
+        if kwargs.get("retry_of"):
+            executor.cancel_run("run-1")
+        return original_create(**kwargs)
+
+    monkeypatch.setattr(running_store, "create_tool_call", cancel_before_retry)
+    with pytest.raises(ExecutionRefused, match="run cannot accept work: cancelled"):
+        executor.submit_subprocess("run-1", "probe", ("command",), tool_call_id="call-1")
+    assert len(runner.calls) == 1
+    assert running_store.get_tool_call("call-1").status is ToolCallStatus.TIMED_OUT
+    assert len([e for e in running_store.list_events("run-1") if e.type == "tool.created"]) == 1
 
 
 def test_mutating_submission_persists_approval_without_spawning(running_store):
@@ -153,7 +345,7 @@ def test_started_committed_and_cancellation_registered_before_runner(running_sto
             assert observer.get_tool_call("call-1").status is ToolCallStatus.RUNNING
             assert observer.list_events("run-1")[-1].type == "tool.started"
             assert isinstance(cancel_event, threading.Event)
-            assert executor._active_cancellations["call-1"] is cancel_event
+            assert executor._active_cancellations["call-1"] == ("run-1", cancel_event)
             assert not cancel_event.is_set()
             assert spec.argv == ("probe-command",)
             assert spec.cwd == Path(observer.get_run("run-1").workspace)
@@ -244,7 +436,7 @@ def test_nonrunning_run_is_refused_without_tool_creation(running_store, state):
     executor = RuntimeExecutor(
         running_store, ToolPolicyRegistry({"probe": probe_policy()}), runner
     )
-    with pytest.raises(ExecutionRefused, match="running"):
+    with pytest.raises(ExecutionRefused, match=f"run cannot accept work: {state.value}"):
         executor.submit_subprocess("run-1", "probe", ("command",))
     assert running_store.list_events("run-1") == before
     assert runner.calls == []
@@ -374,7 +566,7 @@ def test_in_process_operation_receives_persisted_arguments(running_store):
         observer = SQLiteStore(running_store.path)
         assert observer.get_tool_call("call-1").status is ToolCallStatus.RUNNING
         assert observer.list_events("run-1")[-1].type == "tool.started"
-        assert executor._active_cancellations["call-1"] is cancel_event
+        assert executor._active_cancellations["call-1"] == ("run-1", cancel_event)
         seen.append((arguments, cancel_event.is_set()))
         return "inspected"
 
@@ -508,7 +700,7 @@ def test_in_process_refuses_nonrunning_run(running_store, state):
     running_store.transition_run("run-1", state, "run.stopped")
     executor = RuntimeExecutor(running_store, inspect_registry())
     before = running_store.list_events("run-1")
-    with pytest.raises(ExecutionRefused, match="running"):
+    with pytest.raises(ExecutionRefused, match=f"run cannot accept work: {state.value}"):
         executor.submit_in_process("run-1", "inspect", {}, lambda args, event: "unused")
     assert running_store.list_events("run-1") == before
 

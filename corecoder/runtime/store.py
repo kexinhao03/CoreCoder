@@ -738,6 +738,57 @@ class SQLiteStore:
             updated_at=timestamp,
         )
 
+    def cancel_run(self, run_id: str) -> RunRecord:
+        """Cancel admission and unstarted calls; active work must settle separately."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"run not found: {run_id}")
+            ensure_run_transition(RunStatus(row["status"]), RunStatus.CANCELLED)
+            connection.execute(
+                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                (RunStatus.CANCELLED.value, timestamp, run_id),
+            )
+            calls = connection.execute(
+                """
+                SELECT id FROM tool_calls
+                WHERE run_id = ? AND status IN (?, ?)
+                ORDER BY created_at, id
+                """,
+                (run_id, ToolCallStatus.CREATED.value, ToolCallStatus.WAITING_APPROVAL.value),
+            ).fetchall()
+            sequence = self._next_event_sequence(connection, run_id)
+            for call in calls:
+                connection.execute(
+                    """
+                    UPDATE tool_calls SET status = ?, updated_at = ?, ended_at = ?
+                    WHERE id = ?
+                    """,
+                    (ToolCallStatus.CANCELLED.value, timestamp, timestamp, call["id"]),
+                )
+                self._insert_event(
+                    connection, run_id=run_id, sequence=sequence,
+                    event_type="tool.cancelled", payload={"tool_call_id": call["id"]},
+                    created_at=timestamp,
+                )
+                sequence += 1
+            self._insert_event(
+                connection, run_id=run_id, sequence=sequence,
+                event_type="run.cancelled", payload={}, created_at=timestamp,
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self.get_run(run_id)
+
     def record_event(
         self, run_id: str, event_type: str, payload: dict
     ) -> EventRecord:

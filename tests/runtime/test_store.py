@@ -63,6 +63,66 @@ def test_initialize_creates_runtime_tables(tmp_path):
     assert {"runs", "tool_calls", "approvals", "events"} <= names
 
 
+@pytest.mark.parametrize("status", [ToolCallStatus.CREATED, ToolCallStatus.WAITING_APPROVAL,
+                                   ToolCallStatus.RUNNING, ToolCallStatus.SUCCEEDED])
+def test_cancel_run_settles_only_unstarted_calls_atomically(store_with_run, status):
+    store = store_with_run
+    store.transition_run("run-1", RunStatus.RUNNING, "run.started")
+    create_test_call(store, "call-1")
+    if status is ToolCallStatus.WAITING_APPROVAL:
+        store.request_approval("call-1", arguments_summary="safe", workspace=".", risk_reason="test")
+    elif status in {ToolCallStatus.RUNNING, ToolCallStatus.SUCCEEDED}:
+        store.transition_tool_call("call-1", ToolCallStatus.RUNNING, "tool.started")
+        if status is ToolCallStatus.SUCCEEDED:
+            store.transition_tool_call("call-1", status, "tool.completed")
+    before = store.get_tool_call("call-1")
+    events_before = store.list_events("run-1")
+    store.cancel_run("run-1")
+    run = store.get_run("run-1")
+    call = store.get_tool_call("call-1")
+    events = store.list_events("run-1")[len(events_before):]
+    assert run.status is RunStatus.CANCELLED
+    if status in {ToolCallStatus.CREATED, ToolCallStatus.WAITING_APPROVAL}:
+        assert call.status is ToolCallStatus.CANCELLED
+        assert call.ended_at == call.updated_at == run.updated_at
+        assert call.started_at is None
+        assert [(e.type, e.payload) for e in events] == [
+            ("tool.cancelled", {"tool_call_id": "call-1"}), ("run.cancelled", {}),
+        ]
+    else:
+        assert call == before
+        assert [(e.type, e.payload) for e in events] == [("run.cancelled", {})]
+    assert [e.sequence for e in store.list_events("run-1")] == list(
+        range(1, len(events_before) + len(events) + 1)
+    )
+
+
+def test_cancel_run_rolls_back_all_changes_if_event_insert_fails(store_with_run):
+    store = store_with_run
+    create_test_call(store, "call-1")
+    before = (store.get_run("run-1"), store.get_tool_call("call-1"), store.list_events("run-1"))
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("""
+            CREATE TRIGGER fail_cancel_event BEFORE INSERT ON events
+            WHEN NEW.type = 'run.cancelled'
+            BEGIN SELECT RAISE(ABORT, 'injected event failure'); END
+        """)
+    with pytest.raises(sqlite3.IntegrityError, match="injected event failure"):
+        store.cancel_run("run-1")
+    assert (store.get_run("run-1"), store.get_tool_call("call-1"), store.list_events("run-1")) == before
+
+
+def test_cancel_run_validates_transition_without_writes(store_with_run):
+    store = store_with_run
+    store.transition_run("run-1", RunStatus.RUNNING, "run.started")
+    store.transition_run("run-1", RunStatus.SUCCEEDED, "run.completed")
+    before = store.list_events("run-1")
+    with pytest.raises(InvalidTransition):
+        store.cancel_run("run-1")
+    assert store.get_run("run-1").status is RunStatus.SUCCEEDED
+    assert store.list_events("run-1") == before
+
+
 def test_create_run_persists_state_and_created_event(tmp_path):
     store = SQLiteStore(tmp_path / "runs.db")
     store.initialize()

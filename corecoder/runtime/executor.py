@@ -15,9 +15,9 @@ from .approvals import (
     ApprovalStatus,
     summarize_arguments,
 )
-from .models import ToolCallRecord
+from .models import RunRecord, ToolCallRecord
 from .policies import FailureKind, ToolPolicyRegistry
-from .processes import ManagedProcessRunner, ProcessSpec
+from .processes import ManagedProcessRunner, ProcessResult, ProcessSpec
 from .state import ExecutionKind, RiskLevel, RunStatus, ToolCallStatus
 from .store import SQLiteStore
 
@@ -62,7 +62,43 @@ class RuntimeExecutor:
         self._store = store
         self._policies = policies
         self._process_runner = process_runner or ManagedProcessRunner()
-        self._active_cancellations: dict[str, threading.Event] = {}
+        self._active_cancellations: dict[str, tuple[str, threading.Event]] = {}
+        self._cancellation_lock = threading.Lock()
+
+    def cancel_run(self, run_id: str) -> RunRecord:
+        run = self._store.cancel_run(run_id)
+        with self._cancellation_lock:
+            for active_run_id, cancellation in self._active_cancellations.values():
+                if active_run_id == run_id:
+                    cancellation.set()
+        return run
+
+    def _require_running(self, run_id: str) -> RunRecord:
+        run = self._store.get_run(run_id)
+        if run.status is not RunStatus.RUNNING:
+            raise ExecutionRefused(f"run cannot accept work: {run.status.value}")
+        return run
+
+    def _start_call(self, call: ToolCallRecord) -> ToolCallRecord:
+        try:
+            return self._store.transition_tool_call(call.id, ToolCallStatus.RUNNING, "tool.started")
+        except ValueError:
+            self._require_running(call.run_id)
+            raise
+
+    def _register_cancellation(self, call: ToolCallRecord) -> threading.Event:
+        cancellation = threading.Event()
+        with self._cancellation_lock:
+            self._active_cancellations[call.id] = (call.run_id, cancellation)
+            # Cancellation may commit after tool.started but before registration.
+            # Register first so a later cancellation either finds us or is seen here.
+            if self._store.get_run(call.run_id).status is RunStatus.CANCELLED:
+                cancellation.set()
+        return cancellation
+
+    def _unregister_cancellation(self, call_id: str) -> None:
+        with self._cancellation_lock:
+            self._active_cancellations.pop(call_id, None)
 
     def submit_subprocess(
         self,
@@ -110,9 +146,7 @@ class RuntimeExecutor:
         tool_call_id: str | None,
         approval_id: str | None,
     ) -> PendingApproval | ToolCallRecord:
-        run = self._store.get_run(run_id)
-        if run.status is not RunStatus.RUNNING:
-            raise ExecutionRefused("running run required")
+        run = self._require_running(run_id)
         policy = self._policies.resolve(tool_name)
         if policy.execution_kind is not execution_kind:
             raise ExecutionRefused(f"{execution_kind.value.replace('_', '-')} policy required")
@@ -123,26 +157,30 @@ class RuntimeExecutor:
                 sort_keys=True,
             )
             idempotency_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        call = self._store.create_tool_call(
-            run_id=run_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            risk_level=policy.risk_level,
-            execution_kind=policy.execution_kind,
-            idempotent=policy.idempotent,
-            idempotency_key=idempotency_key,
-            timeout_seconds=policy.timeout_seconds,
-            tool_call_id=tool_call_id,
-        )
-        if policy.requires_approval:
-            approval = self._store.request_approval(
-                call.id,
-                arguments_summary=summarize_arguments(arguments),
-                workspace=run.workspace,
-                risk_reason=policy.risk_level.value,
-                approval_id=approval_id,
+        try:
+            call = self._store.create_tool_call(
+                run_id=run_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                risk_level=policy.risk_level,
+                execution_kind=policy.execution_kind,
+                idempotent=policy.idempotent,
+                idempotency_key=idempotency_key,
+                timeout_seconds=policy.timeout_seconds,
+                tool_call_id=tool_call_id,
             )
-            return PendingApproval(self._store.get_tool_call(call.id), approval)
+            if policy.requires_approval:
+                approval = self._store.request_approval(
+                    call.id,
+                    arguments_summary=summarize_arguments(arguments),
+                    workspace=run.workspace,
+                    risk_reason=policy.risk_level.value,
+                    approval_id=approval_id,
+                )
+                return PendingApproval(self._store.get_tool_call(call.id), approval)
+        except ValueError:
+            self._require_running(run_id)
+            raise
         return call
 
     def execute_approved_subprocess(self, call_id: str) -> RuntimeResult:
@@ -170,17 +208,15 @@ class RuntimeExecutor:
         self, call: ToolCallRecord, operation: Callable[[dict, threading.Event], str]
     ) -> RuntimeResult:
         """Invoke synchronously; cancellation requires the callable's cooperation."""
-        if self._store.get_run(call.run_id).status is not RunStatus.RUNNING:
-            raise ExecutionRefused("running run required")
+        self._require_running(call.run_id)
         policy = self._policies.resolve(call.tool_name)
         if (
             call.execution_kind is not ExecutionKind.IN_PROCESS
             or policy.execution_kind is not ExecutionKind.IN_PROCESS
         ):
             raise ExecutionRefused("in-process policy required")
-        call = self._store.transition_tool_call(call.id, ToolCallStatus.RUNNING, "tool.started")
-        cancellation = threading.Event()
-        self._active_cancellations[call.id] = cancellation
+        call = self._start_call(call)
+        cancellation = self._register_cancellation(call)
         output = ""
         failure_kind = None
         try:
@@ -193,7 +229,7 @@ class RuntimeExecutor:
             if cancellation.is_set():
                 failure_kind = FailureKind.CANCELLED
         finally:
-            self._active_cancellations.pop(call.id, None)
+            self._unregister_cancellation(call.id)
 
         if failure_kind is FailureKind.CANCELLED:
             status, event = ToolCallStatus.CANCELLED, "tool.cancelled"
@@ -218,17 +254,21 @@ class RuntimeExecutor:
                 source.run_id, "tool.retry_scheduled",
                 {"tool_call_id": source.id, "attempt": source.attempt + 1},
             )
-            call = self._store.create_tool_call(
-                run_id=source.run_id,
-                tool_name=source.tool_name,
-                arguments=source.arguments,
-                risk_level=source.risk_level,
-                execution_kind=source.execution_kind,
-                idempotent=source.idempotent,
-                idempotency_key=source.idempotency_key,
-                timeout_seconds=source.timeout_seconds,
-                retry_of=source.id,
-            )
+            try:
+                call = self._store.create_tool_call(
+                    run_id=source.run_id,
+                    tool_name=source.tool_name,
+                    arguments=source.arguments,
+                    risk_level=source.risk_level,
+                    execution_kind=source.execution_kind,
+                    idempotent=source.idempotent,
+                    idempotency_key=source.idempotency_key,
+                    timeout_seconds=source.timeout_seconds,
+                    retry_of=source.id,
+                )
+            except ValueError:
+                self._require_running(source.run_id)
+                raise
 
     def _should_retry(self, result: RuntimeResult) -> bool:
         source = result.call
@@ -247,9 +287,7 @@ class RuntimeExecutor:
         if not isinstance(call.arguments, dict) or not isinstance(call.arguments.get("argv"), list):
             raise ValueError("persisted arguments must contain an argv list")  # noqa: TRY004 - argv contract
         argv = _validated_argv(call.arguments["argv"])
-        run = self._store.get_run(call.run_id)
-        if run.status is not RunStatus.RUNNING:
-            raise ExecutionRefused("running run required")
+        run = self._require_running(call.run_id)
         policy = self._policies.resolve(call.tool_name)
         if (
             call.execution_kind is not ExecutionKind.SUBPROCESS
@@ -257,11 +295,8 @@ class RuntimeExecutor:
         ):
             raise ExecutionRefused("subprocess policy required")
         # Validate persisted argv before claiming the call has started.
-        call = self._store.transition_tool_call(
-            call.id, ToolCallStatus.RUNNING, "tool.started"
-        )
-        cancellation = threading.Event()
-        self._active_cancellations[call.id] = cancellation
+        call = self._start_call(call)
+        cancellation = self._register_cancellation(call)
         try:
             spec = ProcessSpec(
                 argv=argv,
@@ -270,9 +305,12 @@ class RuntimeExecutor:
                 output_limit=policy.output_limit,
                 termination_grace_seconds=1.0,
             )
-            result = self._process_runner.run(spec, cancellation)
+            if cancellation.is_set():
+                result = ProcessResult(None, "", "", 0.0, FailureKind.CANCELLED, True)
+            else:
+                result = self._process_runner.run(spec, cancellation)
         finally:
-            self._active_cancellations.pop(call.id, None)
+            self._unregister_cancellation(call.id)
 
         failure_kind = result.failure_kind
         if failure_kind is FailureKind.TIMED_OUT:
