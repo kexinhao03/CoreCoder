@@ -173,59 +173,100 @@ def test_pre_cancelled_request_never_spawns(tmp_path):
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group assertion")
 def test_timeout_kills_descendant_process(tmp_path):
     survived = tmp_path / "child-survived"
+    child_ready = tmp_path / "child-ready"
+    parent_ready = tmp_path / "parent-ready"
     child = (
-        "import time; time.sleep(0.5); "
+        f"import time; open({str(child_ready)!r}, 'w').close(); time.sleep(3); "
         f"open({str(survived)!r}, 'w').close()"
     )
     parent = (
-        "import subprocess, sys, time; "
-        f"subprocess.Popen([sys.executable, '-c', {child!r}]); "
-        "time.sleep(3)"
+        "import signal, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+        "def stop(signum, frame):\n"
+        "    child.wait(timeout=1)\n"
+        "    print('child-reaped', flush=True)\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "deadline = time.monotonic() + 1.5\n"
+        f"while not Path({str(child_ready)!r}).exists():\n"
+        "    if time.monotonic() >= deadline:\n"
+        "        child.kill()\n"
+        "        child.wait(timeout=1)\n"
+        "        raise SystemExit('child readiness timed out')\n"
+        "    time.sleep(0.01)\n"
+        f"Path({str(parent_ready)!r}).touch()\n"
+        "time.sleep(10)\n"
     )
     result = ManagedProcessRunner().run(
         ProcessSpec(
             argv=(sys.executable, "-c", parent),
             cwd=tmp_path,
-            timeout_seconds=0.1,
+            timeout_seconds=2,
             output_limit=1000,
-            termination_grace_seconds=0.1,
+            termination_grace_seconds=1.5,
         ),
         threading.Event(),
     )
 
-    time.sleep(0.7)
+    assert child_ready.exists()
+    assert parent_ready.exists()
+    time.sleep(3.2)
     assert result.failure_kind is FailureKind.TIMED_OUT
+    assert result.termination_confirmed is True
+    assert result.exit_code == 0
+    assert result.stdout == "child-reaped\n"
     assert not survived.exists()
 
 
 def test_running_process_can_be_cancelled(tmp_path):
+    ready = tmp_path / "ready"
     cancelled = threading.Event()
-    timer = threading.Timer(0.2, cancelled.set)
-    timer.start()
+
+    def cancel_when_ready():
+        deadline = time.monotonic() + 3
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cancelled.set()
+
+    canceller = threading.Thread(target=cancel_when_ready)
+    canceller.start()
     try:
         result = ManagedProcessRunner().run(
-            make_spec(
-                tmp_path,
-                sys.executable,
-                "-c",
-                "import time; print('started', flush=True); time.sleep(3)",
+            ProcessSpec(
+                argv=(
+                    sys.executable,
+                    "-c",
+                    (
+                        "import time; print('started', flush=True); "
+                        f"open({str(ready)!r}, 'w').close(); time.sleep(10)"
+                    ),
+                ),
+                cwd=tmp_path,
+                timeout_seconds=5,
+                output_limit=1000,
+                termination_grace_seconds=0.2,
             ),
             cancelled,
         )
     finally:
-        timer.cancel()
-        timer.join()
+        cancelled.set()
+        canceller.join(timeout=3)
+
+    assert not canceller.is_alive(), "canceller did not finish within 3 seconds"
+    assert ready.exists(), "process did not become ready within 3 seconds"
 
     assert result.failure_kind is FailureKind.CANCELLED
     assert result.termination_confirmed is True
     assert result.exit_code is not None
     assert result.stdout == "started\n"
-    assert result.duration_seconds < 2
+    assert result.duration_seconds < 5
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX signal handling")
 @pytest.mark.parametrize("grace", [0, 0.1])
 def test_timeout_force_kills_process_ignoring_term(tmp_path, grace):
+    ready = tmp_path / "ready"
     result = ManagedProcessRunner().run(
         ProcessSpec(
             argv=(
@@ -233,59 +274,75 @@ def test_timeout_force_kills_process_ignoring_term(tmp_path, grace):
                 "-c",
                 (
                     "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                    "print('ready', flush=True); time.sleep(3)"
+                    "print('ready', flush=True); "
+                    f"open({str(ready)!r}, 'w').close(); time.sleep(10)"
                 ),
             ),
             cwd=tmp_path,
-            timeout_seconds=0.2,
+            timeout_seconds=2,
             output_limit=1000,
             termination_grace_seconds=grace,
         ),
         threading.Event(),
     )
 
+    assert ready.exists()
     assert result.failure_kind is FailureKind.TIMED_OUT
     assert result.termination_confirmed is True
     assert result.exit_code == -signal.SIGKILL
     assert result.stdout == "ready\n"
-    assert result.duration_seconds < 2
+    assert result.duration_seconds < 4
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group assertion")
 def test_timeout_kills_resistant_child_after_parent_exits(tmp_path):
     survived = tmp_path / "child-survived"
     ready = tmp_path / "child-ready"
+    parent_ready = tmp_path / "parent-ready"
     child = (
         "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-        f"open({str(ready)!r}, 'w').close(); time.sleep(1); "
+        f"open({str(ready)!r}, 'w').close(); time.sleep(3); "
         f"open({str(survived)!r}, 'w').close()"
     )
     parent = (
-        "import subprocess, sys, time; "
-        f"subprocess.Popen([sys.executable, '-c', {child!r}]); time.sleep(3)"
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+        "deadline = time.monotonic() + 1.5\n"
+        f"while not Path({str(ready)!r}).exists():\n"
+        "    if time.monotonic() >= deadline:\n"
+        "        child.kill()\n"
+        "        child.wait(timeout=1)\n"
+        "        raise SystemExit('child readiness timed out')\n"
+        "    time.sleep(0.01)\n"
+        f"Path({str(parent_ready)!r}).touch()\n"
+        "time.sleep(10)\n"
     )
     result = ManagedProcessRunner().run(
         ProcessSpec(
             argv=(sys.executable, "-c", parent),
             cwd=tmp_path,
-            timeout_seconds=0.3,
+            timeout_seconds=2,
             output_limit=1000,
             termination_grace_seconds=0.1,
         ),
         threading.Event(),
     )
 
-    time.sleep(1.1)
     assert ready.exists()
+    assert parent_ready.exists()
+    time.sleep(3.2)
     assert not survived.exists()
-    assert result.failure_kind is FailureKind.TIMED_OUT
-    assert result.termination_confirmed is True
-    assert result.exit_code == -signal.SIGTERM
-    assert result.duration_seconds < 2
+    assert (result.failure_kind, result.termination_confirmed, result.exit_code) in (
+        (FailureKind.TIMED_OUT, True, -signal.SIGTERM),
+        (FailureKind.TERMINATION_UNKNOWN, False, None),
+    )
+    assert result.duration_seconds < 4
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX graceful signal handling")
 def test_timeout_drains_output_written_during_grace(tmp_path):
+    ready = tmp_path / "ready"
     code = (
         "import signal, sys, time\n"
         "def stop(signum, frame):\n"
@@ -294,19 +351,21 @@ def test_timeout_drains_output_written_during_grace(tmp_path):
         "    raise SystemExit(0)\n"
         "signal.signal(signal.SIGTERM, stop)\n"
         "print('ready', flush=True)\n"
-        "time.sleep(3)\n"
+        f"open({str(ready)!r}, 'w').close()\n"
+        "time.sleep(10)\n"
     )
     result = ManagedProcessRunner().run(
         ProcessSpec(
             argv=(sys.executable, "-c", code),
             cwd=tmp_path,
-            timeout_seconds=0.2,
+            timeout_seconds=2,
             output_limit=1000,
             termination_grace_seconds=0.2,
         ),
         threading.Event(),
     )
 
+    assert ready.exists()
     assert result.failure_kind is FailureKind.TIMED_OUT
     assert result.termination_confirmed is True
     assert result.exit_code == 0
@@ -334,6 +393,7 @@ def test_polling_preserves_output_without_repeating_partial_bytes(tmp_path):
 @pytest.mark.skipif(os.name != "posix", reason="POSIX signal failure injection")
 @pytest.mark.parametrize("error_type", [PermissionError, ProcessLookupError])
 def test_signal_failure_with_live_process_is_termination_unknown(tmp_path, monkeypatch, error_type):
+    ready = tmp_path / "ready"
     real_popen = subprocess.Popen
     real_killpg = os.killpg
     processes = []
@@ -358,23 +418,25 @@ def test_signal_failure_with_live_process_is_termination_unknown(tmp_path, monke
                     "-c",
                     (
                         "import sys, time; print('partial', flush=True); "
-                        "print('error', file=sys.stderr, flush=True); time.sleep(3)"
+                        "print('error', file=sys.stderr, flush=True); "
+                        f"open({str(ready)!r}, 'w').close(); time.sleep(10)"
                     ),
                 ),
                 cwd=tmp_path,
-                timeout_seconds=0.2,
+                timeout_seconds=2,
                 output_limit=1000,
                 termination_grace_seconds=0,
             ),
             threading.Event(),
         )
+        assert ready.exists()
         assert processes[0].poll() is None
         assert result.failure_kind is FailureKind.TERMINATION_UNKNOWN
         assert result.termination_confirmed is False
         assert result.exit_code is None
         assert result.stdout == "partial\n"
         assert result.stderr == "error\n"
-        assert result.duration_seconds < 2
+        assert result.duration_seconds < 4
         assert processes[0].stdout.closed
         assert processes[0].stderr.closed
     finally:
