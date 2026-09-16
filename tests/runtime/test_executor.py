@@ -628,6 +628,35 @@ def test_retry_requires_persisted_source_idempotence(running_store):
     assert len(runner.calls) == 1
 
 
+@pytest.mark.parametrize("risk", [RiskLevel.MUTATING, RiskLevel.EXTERNAL_EFFECT])
+def test_policy_change_cannot_retry_approved_non_read_only_call(running_store, risk):
+    runner = SequenceRunner([timeout_result(), success_result("unauthorized retry")])
+    original = RuntimeExecutor(
+        running_store, ToolPolicyRegistry({"probe": probe_policy(risk_level=risk)}), runner
+    )
+    pending = original.submit_subprocess(
+        "run-1", "probe", ("command",), tool_call_id="call-1", approval_id="approval-1"
+    )
+    assert isinstance(pending, PendingApproval)
+    assert pending.call.idempotent
+    assert runner.calls == []
+    running_store.resolve_approval("approval-1", ApprovalDecision.ALLOW_ONCE)
+    read_only_retry_policy = probe_policy(
+        max_attempts=2, auto_retry=True, retryable_failures=frozenset({FailureKind.TIMED_OUT})
+    )
+    restarted = RuntimeExecutor(
+        SQLiteStore(running_store.path),
+        ToolPolicyRegistry({"probe": read_only_retry_policy}), runner,
+    )
+    result = restarted.execute_approved_subprocess("call-1")
+    assert len(runner.calls) == 1
+    assert result.call.id == "call-1"
+    assert result.call.risk_level is risk
+    assert result.call.status is ToolCallStatus.TIMED_OUT
+    assert result.call.attempt == 1
+    assert "tool.retry_scheduled" not in [e.type for e in running_store.list_events("run-1")]
+
+
 def test_retry_requires_running_run(running_store):
     class PausingRunner(SequenceRunner):
         def run(self, spec, cancel_event):

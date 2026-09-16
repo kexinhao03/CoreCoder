@@ -18,7 +18,7 @@ from .approvals import (
 from .models import ToolCallRecord
 from .policies import FailureKind, ToolPolicyRegistry
 from .processes import ManagedProcessRunner, ProcessSpec
-from .state import ExecutionKind, RunStatus, ToolCallStatus
+from .state import ExecutionKind, RiskLevel, RunStatus, ToolCallStatus
 from .store import SQLiteStore
 
 
@@ -235,6 +235,7 @@ class RuntimeExecutor:
         policy = self._policies.resolve(source.tool_name)
         return (
             source.status in {ToolCallStatus.FAILED, ToolCallStatus.TIMED_OUT}
+            and source.risk_level is RiskLevel.READ_ONLY
             and source.idempotent
             and policy.auto_retry
             and result.failure_kind in policy.retryable_failures
