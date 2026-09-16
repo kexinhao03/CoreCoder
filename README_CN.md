@@ -2,7 +2,7 @@
 
 # CoreCoder
 
-**编程 agent 里的 nanoGPT。1.2k 行引擎、整包 3086 行纯 Python 全部一口气可读，读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
+**编程 agent 里的 nanoGPT。1.2k 行引擎、整包 4598 行可读的纯 Python，读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
 
 *learn from it · fork it · ship something better*
 
@@ -25,7 +25,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1171 行 / 整包 3086 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 1171 行 / 整包 4598 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -36,9 +36,9 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1171 行。连最外层的 CLI、配置、打包和持久化运行时一起算，整个包 28 个文件、物理 3086 行、净 2574 行，每个文件都短到能一口气读完。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints 和 ReliAgent 运行时基础，下文各有交代。
+引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1171 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 33 个文件、物理 4598 行、净 3949 行。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints 和 ReliAgent 运行时基础，下文各有交代。
 
-它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头，176 个测试是绿的。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头，342 个测试是绿的。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -262,6 +262,19 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 每个配好的服务器在启动时拉起一个子进程，握手、列出工具；每件工具都注册成 `mcp__<服务器>__<工具>`，钩子匹配和授权闸对它和内建工具一视同仁。MCP 工具不在只读名单里，模型要调，得先问过你。握手给十五秒，一次调用给六十秒；服务器挂了或者迟迟不应，那一次调用就以普通工具结果的形式报错，循环照常往下走。客户端只实现协议里工具那一小片（initialize、tools/list、tools/call），别的一概不碰，所以整块实现收在 `mcp.py` 一个文件里，两百行出头。没有 `mcp.json` 就没有 MCP，一切照旧。
 
+## ReliAgent 执行与恢复基础
+
+`corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。这是按需使用的基础模块，尚未接入现有 CLI 或 Agent 循环。
+
+- 审批请求在一个事务里保存 Approval、等待中的 Run/ToolCall 状态和 Event。`allow_once` 绑定一个 ToolCall attempt 及其已存参数，不能授权另一个 attempt。拒绝会取消该调用，不启动进程。
+- 策略声明风险、执行类型、时限与重试资格，不是安全沙箱：被归类为只读的工具仍拥有其进程的操作系统权限。
+- 子进程启动前先提交 `tool.started`，限制返回输出，再记录观测结果。POSIX 下新建 session，可以对原进程组发 TERM/KILL，并确认父进程和进程组都已消失，比仅杀直接子进程的超时处理更强；主动逃离进程组的后代不在保证范围内。Windows 标准库创建进程组与终止父进程只能 best-effort，不能保证停掉整棵进程树；无法确认终止时记为 `interrupted`，不能声称已确认超时。
+- SQLite 无法和外部副作用原子提交：进程可能已经完成作用，完成事务却失败。只在启动恢复、旧 executor 已失去所有权后调用 `RecoveryManager.scan()`，不能扫描仍有意运行的 executor 工作。扫描把运行中孤儿标为 `interrupted`，只分类，不执行，不接收 runner/callback。高风险或未知结果需人工核对；这是避免不安全重放，不是 exactly-once 副作用保证。
+- 自动重试同时要求已存只读风险与幂等性、当前策略许可、剩余 attempt 预算，以及显式列出的可重试失败类别。重试创建新 ToolCall，用 `attempt` 和 `retry_of` 保留血缘。安全启动恢复重试还要求 `process_lost` 来源并显式调用 `resume_retry`；它只创建新 attempt，不执行。
+- Run 取消先提交 cancelled 状态，关闭新调用和重试准入，再通知活动工作。进程内操作收到协作式 `threading.Event`；不能强制停止 callable、强制实施其时限，也不能回滚已发生的副作用。返回 cancelled 状态不等于副作用被回滚。
+
+Event 保留每个 Run 内的序号和 ToolCall 标识，方便核查；阶段 2 尚未实现层级 Trace/Span、运行时 token/成本或聚合指标、Eval 数据集/评分，也没有自动 Agent 循环执行/恢复集成。现有 CLI 成本报告与未来的运行时指标是分开的。
+
 ## 相关项目
 
 如果你读 CoreCoder 读得还顺，下面几个我做的 agent / LLM 系统方向的工具也许用得上：
@@ -274,7 +287,7 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（176 个测试）、`ruff check` 和 `compileall`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`（342 个测试）、`ruff check` 和 `compileall`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 

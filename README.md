@@ -2,7 +2,7 @@
 
 # CoreCoder
 
-**The nanoGPT of coding agents. A 1.2k-line engine inside 3,086 readable lines of pure Python: understand how a coding agent actually works, then fork your own.**
+**The nanoGPT of coding agents. A 1.2k-line engine inside 4,598 readable lines of pure Python: understand how a coding agent actually works, then fork your own.**
 
 *learn from it · fork it · ship something better*
 
@@ -25,7 +25,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| Lines of code | ~1,171 engine / 3,086 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
+| Lines of code | ~1,171 engine / 4,598 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
 | Time to read it all | one afternoon | can't (closed) | a few days of slogging | one afternoon |
 | Breakpoint, change, rerun? | yes, every line | no | yes, but there's a lot | yes |
 | What it's for | understand one, then fork your own | production coding assistant | terminal pair-programming | minimal GPT for teaching |
@@ -36,9 +36,9 @@ The nanoGPT column is there as a reference point: minimal, readable, but it teac
 
 I've always felt coding agents get talked about as if they were arcane. Strip a tool like Claude Code or Cursor all the way down and the core is a `while` loop wrapped around a large model, plus seven or eight tools that let it actually do things. The hard part was never the loop; it's everything the loop has to cope with once it meets the real world. CoreCoder is the minimal version that writes that core out honestly.
 
-The engine (loop, model interface, context, tools, sessions) is 1,171 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole package is 28 files: 3,086 physical lines, 2,574 net, every one short enough to read in a single sitting. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime foundation, each documented below.
+The engine (loop, model interface, context, tools, sessions) is 1,171 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole committed package is 33 files: 4,598 physical lines, 3,949 net. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime foundation, each documented below.
 
-And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. 176 tests, all green. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. 342 tests, all green. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -263,6 +263,19 @@ Drop a `mcp.json` under `~/.corecoder` and tools from any MCP server join the ag
 
 Each configured server starts as a subprocess at launch, handshakes, and lists its tools; every one is registered as `mcp__<server>__<tool>`, so hook matchers and the consent gate treat it exactly like a built-in. MCP tools stay out of the read-only set, meaning the agent asks before running one. The handshake gets fifteen seconds, a call gets sixty, and a server that dies or never answers fails that one call as an ordinary tool result instead of killing the loop. The client speaks the tools slice of the protocol (initialize, tools/list, tools/call) and nothing else, which keeps the whole thing inside `mcp.py` at about 200 lines. With no `mcp.json` there is no MCP and nothing changes.
 
+## ReliAgent execution and recovery foundation
+
+`corecoder.runtime` exposes the durable Run, ToolCall, Event, and SQLiteStore API alongside approval records, policies, `ManagedProcessRunner`, `RuntimeExecutor`, and `RecoveryManager`. This is an opt-in foundation, not yet wired into the existing CLI or Agent loop.
+
+- Approval requests atomically persist the Approval, waiting Run/ToolCall states, and Event. An `allow_once` decision belongs to one ToolCall attempt and its stored arguments; it is not permission for another attempt. Denial cancels that call without spawning a process.
+- Policy declares risk, execution kind, deadline, and retry eligibility. It is not a security sandbox: a tool classified read-only still has the OS permissions of its process.
+- Subprocess work commits `tool.started` before spawning, bounds returned output, and records the observed result. On POSIX, a new session allows TERM/KILL of the original process group and confirmation that both parent and group are gone, stronger than a timeout that only kills the direct child. Descendants that escape the group are outside this guarantee. Windows standard-library process-group creation and parent termination are best-effort, not a guaranteed process-tree stop; unconfirmed termination becomes `interrupted`, not a confirmed timeout.
+- SQLite cannot atomically commit an external side effect. A process may finish its effect before the completion transaction fails. Call `RecoveryManager.scan()` only at startup, after prior executor ownership is gone, never against intentionally live executor work. It marks running orphans `interrupted` and classifies candidates without executing anything or accepting a runner/callback. High-risk or unknown outcomes require human reconciliation; this avoids unsafe replay without claiming exactly-once effects.
+- Automatic retry requires persisted read-only risk and idempotency, current policy permission, remaining attempt budget, and an explicitly retryable failure class. Each retry is a new ToolCall with `attempt` and `retry_of` lineage. Safe startup recovery retry additionally requires `process_lost` provenance and explicit `resume_retry`; it only creates a new attempt, it does not run it.
+- Run cancellation first commits the cancelled state, closing admission of new calls and retries, then signals active work. In-process operations receive a cooperative `threading.Event`; cancellation cannot force-stop a callable, enforce its deadline, or roll back effects already performed. A returned cancelled status is not proof of effect rollback.
+
+Events retain per-Run sequence and ToolCall identifiers for inspection, but Phase 2 does not yet implement hierarchical Trace/Span records, runtime token/cost or aggregate metrics, Eval datasets/scoring, or automatic Agent-loop execution/recovery integration. The existing CLI cost report is separate from those future runtime metrics.
+
 ## Related Projects
 
 If working through CoreCoder was useful, here are a few other tools I've built around agents and LLM systems:
@@ -275,7 +288,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (176 tests), `ruff check`, and `compileall`, and make sure they're green. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (342 tests), `ruff check`, and `compileall`, and make sure they're green. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 

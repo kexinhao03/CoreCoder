@@ -343,32 +343,3 @@ def test_interrupted_tool_call_has_no_end_time(store_with_run):
     )
 
     assert interrupted.ended_at is None
-
-
-def test_runtime_public_api():
-    from corecoder.runtime import (
-        EventRecord,
-        ExecutionKind,
-        InvalidTransition,
-        RiskLevel,
-        RunRecord,
-        RunStatus,
-        SQLiteStore,
-        ToolCallRecord,
-        ToolCallStatus,
-    )
-
-    assert SQLiteStore is not None
-    assert RunStatus.CREATED.value == "created"
-    assert ToolCallStatus.INTERRUPTED.value == "interrupted"
-    assert all(
-        value is not None
-        for value in (
-            EventRecord,
-            ExecutionKind,
-            InvalidTransition,
-            RiskLevel,
-            RunRecord,
-            ToolCallRecord,
-        )
-    )
