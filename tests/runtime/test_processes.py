@@ -8,6 +8,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from corecoder.runtime import processes
 from corecoder.runtime.policies import FailureKind
 from corecoder.runtime.processes import ManagedProcessRunner, ProcessResult, ProcessSpec
 
@@ -20,6 +21,32 @@ def make_spec(tmp_path, *argv: str, output_limit: int = 1000) -> ProcessSpec:
         output_limit=output_limit,
         termination_grace_seconds=0.2,
     )
+
+
+def ready_gated_monotonic(monkeypatch, ready):
+    real_monotonic = time.monotonic
+    frozen_at = real_monotonic()
+    ready_at = None
+
+    def clock():
+        nonlocal ready_at
+        if ready_at is None:
+            if not ready.exists():
+                return frozen_at
+            ready_at = real_monotonic()
+        return frozen_at + (real_monotonic() - ready_at)
+
+    monkeypatch.setattr(processes, "monotonic", clock)
+
+
+def delay_popen(monkeypatch):
+    real_popen = subprocess.Popen
+
+    def delayed_popen(*args, **kwargs):
+        time.sleep(0.4)
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", delayed_popen)
 
 
 def test_process_runner_captures_success(tmp_path):
@@ -171,7 +198,7 @@ def test_pre_cancelled_request_never_spawns(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group assertion")
-def test_timeout_kills_descendant_process(tmp_path):
+def test_timeout_kills_descendant_process(tmp_path, monkeypatch):
     survived = tmp_path / "child-survived"
     child_ready = tmp_path / "child-ready"
     parent_ready = tmp_path / "parent-ready"
@@ -198,11 +225,13 @@ def test_timeout_kills_descendant_process(tmp_path):
         f"Path({str(parent_ready)!r}).touch()\n"
         "time.sleep(10)\n"
     )
+    ready_gated_monotonic(monkeypatch, parent_ready)
+    delay_popen(monkeypatch)
     result = ManagedProcessRunner().run(
         ProcessSpec(
             argv=(sys.executable, "-c", parent),
             cwd=tmp_path,
-            timeout_seconds=2,
+            timeout_seconds=0.1,
             output_limit=1000,
             termination_grace_seconds=1.5,
         ),
@@ -216,6 +245,7 @@ def test_timeout_kills_descendant_process(tmp_path):
     assert result.termination_confirmed is True
     assert result.exit_code == 0
     assert result.stdout == "child-reaped\n"
+    assert result.duration_seconds < 1
     assert not survived.exists()
 
 
@@ -265,8 +295,9 @@ def test_running_process_can_be_cancelled(tmp_path):
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX signal handling")
 @pytest.mark.parametrize("grace", [0, 0.1])
-def test_timeout_force_kills_process_ignoring_term(tmp_path, grace):
+def test_timeout_force_kills_process_ignoring_term(tmp_path, grace, monkeypatch):
     ready = tmp_path / "ready"
+    ready_gated_monotonic(monkeypatch, ready)
     result = ManagedProcessRunner().run(
         ProcessSpec(
             argv=(
@@ -295,7 +326,7 @@ def test_timeout_force_kills_process_ignoring_term(tmp_path, grace):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group assertion")
-def test_timeout_kills_resistant_child_after_parent_exits(tmp_path):
+def test_timeout_kills_resistant_child_after_parent_exits(tmp_path, monkeypatch):
     survived = tmp_path / "child-survived"
     ready = tmp_path / "child-ready"
     parent_ready = tmp_path / "parent-ready"
@@ -318,6 +349,16 @@ def test_timeout_kills_resistant_child_after_parent_exits(tmp_path):
         f"Path({str(parent_ready)!r}).touch()\n"
         "time.sleep(10)\n"
     )
+    real_termination_confirmed = processes._termination_confirmed
+    confirmations = []
+
+    def observe_termination(process):
+        confirmed = real_termination_confirmed(process)
+        confirmations.append(confirmed)
+        return confirmed
+
+    monkeypatch.setattr(processes, "_termination_confirmed", observe_termination)
+    ready_gated_monotonic(monkeypatch, parent_ready)
     result = ManagedProcessRunner().run(
         ProcessSpec(
             argv=(sys.executable, "-c", parent),
@@ -333,15 +374,20 @@ def test_timeout_kills_resistant_child_after_parent_exits(tmp_path):
     assert parent_ready.exists()
     time.sleep(3.2)
     assert not survived.exists()
-    assert (result.failure_kind, result.termination_confirmed, result.exit_code) in (
-        (FailureKind.TIMED_OUT, True, -signal.SIGTERM),
-        (FailureKind.TERMINATION_UNKNOWN, False, None),
-    )
+    assert confirmations
+    if confirmations[-1]:
+        assert result.failure_kind is FailureKind.TIMED_OUT
+        assert result.termination_confirmed is True
+        assert result.exit_code is not None
+    else:
+        assert result.failure_kind is FailureKind.TERMINATION_UNKNOWN
+        assert result.termination_confirmed is False
+        assert result.exit_code is None
     assert result.duration_seconds < 4
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX graceful signal handling")
-def test_timeout_drains_output_written_during_grace(tmp_path):
+def test_timeout_drains_output_written_during_grace(tmp_path, monkeypatch):
     ready = tmp_path / "ready"
     code = (
         "import signal, sys, time\n"
@@ -354,6 +400,7 @@ def test_timeout_drains_output_written_during_grace(tmp_path):
         f"open({str(ready)!r}, 'w').close()\n"
         "time.sleep(10)\n"
     )
+    ready_gated_monotonic(monkeypatch, ready)
     result = ManagedProcessRunner().run(
         ProcessSpec(
             argv=(sys.executable, "-c", code),
@@ -408,6 +455,7 @@ def test_signal_failure_with_live_process_is_termination_unknown(tmp_path, monke
             raise error_type("injected signal failure")
         return real_killpg(pgid, sig)
 
+    ready_gated_monotonic(monkeypatch, ready)
     monkeypatch.setattr(subprocess, "Popen", spawn)
     monkeypatch.setattr(os, "killpg", fail_signal)
     try:

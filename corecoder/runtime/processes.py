@@ -13,6 +13,7 @@ from pathlib import Path
 from corecoder.runtime.policies import FailureKind
 
 _TRUNCATION_MARKER = "\n... output truncated ...\n"
+monotonic = time.monotonic
 
 
 @dataclass(frozen=True)
@@ -51,13 +52,13 @@ class ManagedProcessRunner:
         spec: ProcessSpec,
         cancellation_event: threading.Event,
     ) -> ProcessResult:
-        started_at = time.monotonic()
+        started_at = monotonic()
         if cancellation_event.is_set():
             return ProcessResult(
                 exit_code=None,
                 stdout="",
                 stderr="",
-                duration_seconds=time.monotonic() - started_at,
+                duration_seconds=monotonic() - started_at,
                 failure_kind=FailureKind.CANCELLED,
                 termination_confirmed=True,
             )
@@ -85,7 +86,7 @@ class ManagedProcessRunner:
                 exit_code=None,
                 stdout="",
                 stderr=_bound_output(str(error), spec.output_limit),
-                duration_seconds=time.monotonic() - started_at,
+                duration_seconds=monotonic() - started_at,
                 failure_kind=FailureKind.SPAWN_ERROR,
                 termination_confirmed=True,
             )
@@ -93,7 +94,7 @@ class ManagedProcessRunner:
         failure_kind = None
         termination_confirmed = True
         while True:
-            remaining = spec.timeout_seconds - (time.monotonic() - started_at)
+            remaining = spec.timeout_seconds - (monotonic() - started_at)
             cancelled = cancellation_event.is_set()
             if cancelled or remaining <= 0:
                 # A completed process wins a race with cancellation or the deadline.
@@ -141,7 +142,7 @@ class ManagedProcessRunner:
                 stderr_bytes.decode("utf-8", errors="replace"),
                 spec.output_limit,
             ),
-            duration_seconds=time.monotonic() - started_at,
+            duration_seconds=monotonic() - started_at,
             failure_kind=failure_kind,
             termination_confirmed=termination_confirmed,
         )
@@ -162,11 +163,11 @@ def _termination_confirmed(process: subprocess.Popen) -> bool:
 
 
 def _wait_for_termination(process: subprocess.Popen, timeout: float) -> bool:
-    deadline = time.monotonic() + timeout
+    deadline = monotonic() + timeout
     while True:
         if _termination_confirmed(process):
             return True
-        remaining = deadline - time.monotonic()
+        remaining = deadline - monotonic()
         if remaining <= 0:
             return False
         time.sleep(min(0.01, remaining))
