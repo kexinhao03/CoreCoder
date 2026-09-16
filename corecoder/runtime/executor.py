@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,19 @@ class ExecutionRefused(RuntimeError):
     pass
 
 
+def _validated_argv(argv: object) -> tuple[str, ...]:
+    if not isinstance(argv, Sequence) or isinstance(argv, (str, bytes)):
+        raise ValueError("argv must be a nonempty sequence of strings")  # noqa: TRY004 - argv contract
+    normalized = tuple(argv)
+    if not normalized:
+        raise ValueError("argv must not be empty")
+    if any(not isinstance(argument, str) for argument in normalized):
+        raise ValueError("argv elements must be strings")
+    if any("\x00" in argument for argument in normalized):
+        raise ValueError("argv elements must not contain NUL")
+    return normalized
+
+
 class RuntimeExecutor:
     def __init__(
         self,
@@ -54,11 +68,12 @@ class RuntimeExecutor:
         self,
         run_id: str,
         tool_name: str,
-        argv: tuple[str, ...],
+        argv: Sequence[str],
         *,
         tool_call_id: str | None = None,
         approval_id: str | None = None,
     ) -> PendingApproval | RuntimeResult:
+        argv = _validated_argv(argv)
         run = self._store.get_run(run_id)
         if run.status is not RunStatus.RUNNING:
             raise ExecutionRefused("running run required")
@@ -109,6 +124,9 @@ class RuntimeExecutor:
         return self._execute_subprocess(call)
 
     def _execute_subprocess(self, call: ToolCallRecord) -> RuntimeResult:
+        if not isinstance(call.arguments, dict) or not isinstance(call.arguments.get("argv"), list):
+            raise ValueError("persisted arguments must contain an argv list")  # noqa: TRY004 - argv contract
+        argv = _validated_argv(call.arguments["argv"])
         run = self._store.get_run(call.run_id)
         if run.status is not RunStatus.RUNNING:
             raise ExecutionRefused("running run required")
@@ -118,7 +136,7 @@ class RuntimeExecutor:
             or policy.execution_kind is not ExecutionKind.SUBPROCESS
         ):
             raise ExecutionRefused("subprocess policy required")
-        # The returned record is read inside the same transaction as tool.started.
+        # Validate persisted argv before claiming the call has started.
         call = self._store.transition_tool_call(
             call.id, ToolCallStatus.RUNNING, "tool.started"
         )
@@ -126,7 +144,7 @@ class RuntimeExecutor:
         self._active_cancellations[call.id] = cancellation
         try:
             spec = ProcessSpec(
-                argv=tuple(call.arguments["argv"]),
+                argv=argv,
                 cwd=Path(run.workspace),
                 timeout_seconds=call.timeout_seconds,
                 output_limit=policy.output_limit,

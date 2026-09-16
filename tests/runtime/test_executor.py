@@ -303,3 +303,53 @@ def test_record_event_failure_rolls_back_sequence(running_store):
     assert running_store.list_events("run-1") == before
     event = running_store.record_event("run-1", "test.valid", {})
     assert event.sequence == before[-1].sequence + 1
+
+
+@pytest.mark.parametrize("argv", [(), [], (1,), ("bad\x00argument",), "command", {"a": "b"}])
+def test_invalid_submission_argv_has_no_durable_or_process_side_effects(running_store, argv):
+    runner = SpyRunner(success_result("unused"))
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry.with_builtin_defaults(), runner)
+    before = running_store.list_events("run-1")
+    with pytest.raises(ValueError, match="argv"):
+        executor.submit_subprocess(
+            "run-1", "bash", argv, tool_call_id="call-invalid", approval_id="approval-invalid"
+        )
+    # Invalid argv is rejected before even looking up a Run.
+    with pytest.raises(ValueError, match="argv"):
+        executor.submit_subprocess("missing-run", "bash", argv)
+    assert running_store.list_events("run-1") == before
+    assert running_store.get_run("run-1").status is RunStatus.RUNNING
+    with pytest.raises(KeyError):
+        running_store.get_tool_call("call-invalid")
+    assert running_store.get_approval_for_tool_call("call-invalid") is None
+    assert executor._active_cancellations == {}
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("arguments", [
+    [], None, "command", {}, {"argv": []}, {"argv": "command"},
+    {"argv": {"command": "arg"}}, {"argv": [1]}, {"argv": ["bad\x00argument"]},
+])
+def test_corrupt_persisted_argv_is_refused_before_start(running_store, arguments):
+    runner = SpyRunner(success_result("unused"))
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry.with_builtin_defaults(), runner)
+    executor.submit_subprocess(
+        "run-1", "bash", ("valid-command",), tool_call_id="call-1", approval_id="approval-1"
+    )
+    running_store.resolve_approval("approval-1", ApprovalDecision.ALLOW_ONCE)
+    with sqlite3.connect(running_store.path) as connection:
+        connection.execute(
+            "UPDATE tool_calls SET arguments_json = ? WHERE id = ?",
+            (json.dumps(arguments), "call-1"),
+        )
+    before = running_store.list_events("run-1")
+    with pytest.raises(ValueError, match="argv"):
+        executor.execute_approved_subprocess("call-1")
+    call = running_store.get_tool_call("call-1")
+    assert call.status is ToolCallStatus.WAITING_APPROVAL
+    assert call.started_at is None
+    assert running_store.get_approval("approval-1").status is ApprovalStatus.APPROVED
+    assert running_store.get_run("run-1").status is RunStatus.RUNNING
+    assert running_store.list_events("run-1") == before
+    assert executor._active_cancellations == {}
+    assert runner.calls == []
