@@ -738,6 +738,41 @@ class SQLiteStore:
             updated_at=timestamp,
         )
 
+    def record_event(
+        self, run_id: str, event_type: str, payload: dict
+    ) -> EventRecord:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            sequence = self._next_event_sequence(connection, run_id)
+            self._insert_event(
+                connection,
+                run_id=run_id,
+                sequence=sequence,
+                event_type=event_type,
+                payload=payload,
+                created_at=timestamp,
+            )
+            row = connection.execute(
+                "SELECT * FROM events WHERE run_id = ? AND sequence = ?",
+                (run_id, sequence),
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return EventRecord(
+            id=row["id"],
+            run_id=row["run_id"],
+            sequence=row["sequence"],
+            type=row["type"],
+            payload=json.loads(row["payload_json"]),
+            created_at=row["created_at"],
+        )
+
     def list_events(self, run_id: str) -> list[EventRecord]:
         with self._connect() as connection:
             rows = connection.execute(
