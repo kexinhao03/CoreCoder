@@ -98,7 +98,7 @@ class ManagedProcessRunner:
             cancelled = cancellation_event.is_set()
             if cancelled or remaining <= 0:
                 # A completed process wins a race with cancellation or the deadline.
-                if process.poll() is not None:
+                if _termination_confirmed(process):
                     try:
                         stdout_bytes, stderr_bytes = process.communicate(timeout=0.05)
                         break
@@ -125,7 +125,10 @@ class ManagedProcessRunner:
 
             try:
                 stdout_bytes, stderr_bytes = process.communicate(timeout=min(0.05, remaining))
-                break
+                if _termination_confirmed(process):
+                    break
+                # EOF and parent exit do not prove redirected descendants have stopped.
+                time.sleep(min(0.01, remaining))
             except subprocess.TimeoutExpired:
                 # communicate retains cumulative bytes; retrying must not append them.
                 pass

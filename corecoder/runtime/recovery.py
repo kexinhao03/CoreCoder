@@ -46,7 +46,7 @@ class RecoveryManager:
 
         candidates = []
         for call in self.store.list_tool_calls(
-            statuses=[ToolCallStatus.INTERRUPTED, ToolCallStatus.WAITING_APPROVAL]
+            statuses=[ToolCallStatus.INTERRUPTED, ToolCallStatus.WAITING_APPROVAL, ToolCallStatus.CREATED]
         ):
             run = self.store.get_run(call.run_id)
             if run.status in terminal_runs:
@@ -62,6 +62,8 @@ class RecoveryManager:
                     and policy.auto_retry and call.attempt < policy.max_attempts
                 )
                 kind = RecoveryKind.RETRY_ALLOWED if safe else RecoveryKind.HUMAN_REQUIRED
+            elif call.status is ToolCallStatus.CREATED:
+                kind, reason = RecoveryKind.HUMAN_REQUIRED, "created_not_started"
             else:
                 approval = self.store.get_approval_for_tool_call(call.id)
                 if run.status is RunStatus.CANCELLED:

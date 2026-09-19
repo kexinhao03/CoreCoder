@@ -251,6 +251,15 @@ An interrupted record never returns directly to `running`. Resolution is explici
 - confirmed no effect/failure: `interrupted -> failed`;
 - abandon: `interrupted -> cancelled`.
 
+Final-review clarification: startup also discovers a `created` reservation as
+`human_required` with reason `created_not_started`. It remains CREATED until an
+explicit `ABANDON` atomically cancels it and records `recovery.resolved`. This
+never-started state does not justify success/failure confirmation or automatic
+execution. Repeated scans are stable; a disposition rechecks status and refuses
+to cancel work that has since started. The caller may submit a fresh request
+after abandonment, including its normal policy/approval checks. Reserved ordinary
+and recovery retries follow the same rule.
+
 For `retry_allowed`, resume first resolves the interrupted source as failed with a
 `process_lost` reason, then creates a new attempt. For `human_required`, the user
 must reconcile external state. If they confirm no effect and request another try,

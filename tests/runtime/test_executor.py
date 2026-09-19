@@ -224,19 +224,19 @@ def test_cancel_before_retry_admission_is_refused_without_another_invocation(
     executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": probe_policy(
         max_attempts=2, auto_retry=True, retryable_failures=frozenset({FailureKind.TIMED_OUT}),
     )}), runner)
-    original_create = running_store.create_tool_call
+    original_schedule = running_store.schedule_retry
 
-    def cancel_before_retry(**kwargs):
-        if kwargs.get("retry_of"):
-            executor.cancel_run("run-1")
-        return original_create(**kwargs)
+    def cancel_before_retry(*args):
+        executor.cancel_run("run-1")
+        return original_schedule(*args)
 
-    monkeypatch.setattr(running_store, "create_tool_call", cancel_before_retry)
+    monkeypatch.setattr(running_store, "schedule_retry", cancel_before_retry)
     with pytest.raises(ExecutionRefused, match="run cannot accept work: cancelled"):
         executor.submit_subprocess("run-1", "probe", ("command",), tool_call_id="call-1")
     assert len(runner.calls) == 1
     assert running_store.get_tool_call("call-1").status is ToolCallStatus.TIMED_OUT
     assert len([e for e in running_store.list_events("run-1") if e.type == "tool.created"]) == 1
+    assert "tool.retry_scheduled" not in [e.type for e in running_store.list_events("run-1")]
 
 
 def test_mutating_submission_persists_approval_without_spawning(running_store):
@@ -393,7 +393,7 @@ def test_process_result_mapping_and_safe_event_payload(
     assert result.output == "output-secret\n[stderr]\nerror-secret"
     assert result.call.result_summary == result.output
     assert executor._active_cancellations == {}
-    events = running_store.list_events("run-1")
+    events = [e for e in running_store.list_events("run-1") if e.type.startswith("tool.")]
     assert events[-2].payload == {"tool_call_id": "call-1"}
     assert events[-1].type == event
     assert events[-1].payload == {

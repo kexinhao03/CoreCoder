@@ -250,22 +250,8 @@ class RuntimeExecutor:
             if not self._should_retry(result):
                 return result
             source = result.call
-            self._store.record_event(
-                source.run_id, "tool.retry_scheduled",
-                {"tool_call_id": source.id, "attempt": source.attempt + 1},
-            )
             try:
-                call = self._store.create_tool_call(
-                    run_id=source.run_id,
-                    tool_name=source.tool_name,
-                    arguments=source.arguments,
-                    risk_level=source.risk_level,
-                    execution_kind=source.execution_kind,
-                    idempotent=source.idempotent,
-                    idempotency_key=source.idempotency_key,
-                    timeout_seconds=source.timeout_seconds,
-                    retry_of=source.id,
-                )
+                call = self._store.schedule_retry(source, result.failure_kind, self._policies)
             except ValueError:
                 self._require_running(source.run_id)
                 raise

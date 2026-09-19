@@ -97,6 +97,7 @@ def test_scan_distinguishes_pending_and_approved_not_started(recovery_store):
     candidates = RecoveryManager(recovery_store, ToolPolicyRegistry()).scan()
     assert {c.call.id: c.kind for c in candidates} == {
         "pending-call": RecoveryKind.APPROVAL_PENDING, "ready-call": RecoveryKind.READY_TO_START,
+        "created": RecoveryKind.HUMAN_REQUIRED,
     }
     assert recovery_store.get_approval("approval-pending-call").status is ApprovalStatus.PENDING
     assert snapshot(recovery_store) == before
@@ -291,7 +292,7 @@ def test_human_reconciliation_never_creates_retry(recovery_store, resolution, st
 
 
 @pytest.mark.parametrize("status", [ToolCallStatus.RUNNING, ToolCallStatus.WAITING_APPROVAL,
-                                   ToolCallStatus.SUCCEEDED, ToolCallStatus.CREATED])
+                                   ToolCallStatus.SUCCEEDED])
 def test_reconcile_rejects_non_interrupted_without_writes(recovery_store, status):
     make_call(recovery_store, "call", status=status)
     before = snapshot(recovery_store)

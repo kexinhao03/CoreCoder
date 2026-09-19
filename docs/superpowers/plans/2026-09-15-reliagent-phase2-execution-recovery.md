@@ -993,10 +993,16 @@ as cancelled without invocation. Do not create a thread or claim a hard timeout.
 - [ ] **Step 5: Implement retry decision and new-attempt creation**
 
 After a subprocess settles as `failed` or `timed_out`, `_should_retry` verifies all
-five policy conditions from the design. When true, call `record_event` with
-`tool.retry_scheduled`, create a new ToolCall using the source metadata and
-`retry_of`, then execute that new record. Use a loop, not recursion, and stop when
-the returned result is not retryable or the attempt reaches `max_attempts`.
+six conditions from the design. When true, use one Store `schedule_retry`
+transaction to revalidate the persisted source, current policy, Run admission,
+and active slot; append `tool.retry_scheduled` and reserve the new ToolCall with
+`tool.created` atomically. Both events identify the new attempt and its `retry_of`
+source. Insertion or event failure rolls back the entire reservation, retaining
+the previously observed source failure. Then execute the new record in a loop,
+stopping when the result is not retryable or reaches `max_attempts`.
+
+Final-review correction: this replaces the original separate event/create recipe
+to satisfy the approved state/audit atomicity contract.
 
 - [ ] **Step 6: Run executor tests and Ruff**
 
@@ -1218,6 +1224,14 @@ updated records. Dynamic `IN` clauses use generated `?` placeholders and enum
 values only; an empty status set returns an empty list.
 
 - [ ] **Step 6: Implement recovery types and deterministic scan**
+
+Final-review completion: also discover persisted `created` reservations as
+`human_required` with reason `created_not_started`. Scan makes no state change
+and never invokes work. Explicit `ABANDON` revalidates the current status and
+atomically cancels the reservation with `recovery.resolved`; success/failure
+confirmation is invalid for CREATED. A started or cancelled reservation rejects
+the stale disposition. After abandonment, callers may submit a fresh request
+through the ordinary policy/approval gate. This also applies to reserved retries.
 
 ```python
 class RecoveryKind(str, Enum):

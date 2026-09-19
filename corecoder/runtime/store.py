@@ -6,12 +6,13 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Iterable
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
 from .models import EventRecord, RunRecord, ToolCallRecord
-from .policies import ToolPolicyRegistry
+from .policies import FailureKind, ToolPolicyRegistry
 from .state import (
     ExecutionKind,
     RiskLevel,
@@ -43,7 +44,7 @@ class SQLiteStore:
         return connection
 
     def initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -182,7 +183,7 @@ class SQLiteStore:
         return run
 
     def get_run(self, run_id: str) -> RunRecord:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM runs WHERE id = ?", (run_id,)
             ).fetchone()
@@ -213,7 +214,7 @@ class SQLiteStore:
         query = "SELECT * FROM runs"
         if values is not None:
             query += " WHERE status IN (" + ",".join("?" for _ in values) + ")"
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(query + " ORDER BY created_at, id", values or []).fetchall()
         return [self._run_from_row(row) for row in rows]
 
@@ -236,7 +237,7 @@ class SQLiteStore:
         query = "SELECT * FROM tool_calls"
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(query + " ORDER BY created_at, id", parameters).fetchall()
         return [self._tool_call_from_row(row) for row in rows]
 
@@ -264,7 +265,7 @@ class SQLiteStore:
         return None
 
     def get_interruption_reason(self, call_id: str) -> str | None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             _, call = self._recovery_records(connection, call_id)
             return self._interruption_reason(connection, call)
 
@@ -335,10 +336,13 @@ class SQLiteStore:
         self, connection: sqlite3.Connection, run: RunRecord, call: ToolCallRecord,
         status: ToolCallStatus, resolution: str, timestamp: str, reason: str | None = None,
     ) -> None:
-        if call.status is not ToolCallStatus.INTERRUPTED:
+        created = call.status is ToolCallStatus.CREATED
+        if created and (status is not ToolCallStatus.CANCELLED or resolution != "abandon"):
+            raise ValueError("created reservation only supports abandonment")
+        if not created and call.status is not ToolCallStatus.INTERRUPTED:
             raise ValueError("recovery requires an interrupted tool call")
         ensure_tool_call_transition(call.status, status)
-        if run.status is not RunStatus.CANCELLED and run.status is not RunStatus.RUNNING:
+        if not created and run.status is not RunStatus.CANCELLED and run.status is not RunStatus.RUNNING:
             ensure_run_transition(run.status, RunStatus.RUNNING)
             connection.execute(
                 "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
@@ -349,6 +353,8 @@ class SQLiteStore:
             (status.value, timestamp, timestamp, reason or call.result_summary, call.id),
         )
         payload = {"tool_call_id": call.id, "resolution": resolution}
+        if created:
+            payload["reason"] = "created_not_started"
         if reason is not None:
             payload["reason"] = reason
         self._insert_event(
@@ -425,7 +431,7 @@ class SQLiteStore:
     def reconcile_interrupted_tool_call(
         self, call_id: str, status: ToolCallStatus, resolution: str,
     ) -> ToolCallRecord:
-        """Commit a human resolution and Run/event changes, never another attempt."""
+        """Resolve interrupted work or abandon a never-started reservation atomically."""
         resolutions = {"confirmed_succeeded": ToolCallStatus.SUCCEEDED,
                        "confirmed_failed": ToolCallStatus.FAILED, "abandon": ToolCallStatus.CANCELLED}
         if resolutions.get(resolution) is not status:
@@ -444,6 +450,73 @@ class SQLiteStore:
         finally:
             connection.close()
         return updated
+
+    def schedule_retry(
+        self, expected_call: ToolCallRecord, failure_kind: FailureKind,
+        registry: ToolPolicyRegistry,
+    ) -> ToolCallRecord:
+        """Reserve an ordinary safe retry together with both attempt audit events."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        retry_id = uuid.uuid4().hex
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            run, call = self._recovery_records(connection, expected_call.id)
+            policy = registry.resolve(call.tool_name)
+            if not (
+                call == expected_call and run.status is RunStatus.RUNNING
+                and call.status in {ToolCallStatus.FAILED, ToolCallStatus.TIMED_OUT}
+                and call.risk_level is RiskLevel.READ_ONLY and call.idempotent
+                and policy.risk_level is RiskLevel.READ_ONLY and policy.idempotent
+                and policy.auto_retry and failure_kind in policy.retryable_failures
+                and failure_kind not in {FailureKind.CANCELLED, FailureKind.TERMINATION_UNKNOWN}
+                and call.attempt < policy.max_attempts
+            ):
+                raise ValueError("retry is not safe or permitted")
+            active = connection.execute(
+                "SELECT id FROM tool_calls WHERE run_id = ? AND status IN (?, ?, ?) LIMIT 1",
+                (run.id, ToolCallStatus.CREATED.value, ToolCallStatus.WAITING_APPROVAL.value,
+                 ToolCallStatus.RUNNING.value),
+            ).fetchone()
+            if active is not None:
+                raise ValueError("run already has an active tool call")
+            previous_retry = connection.execute(
+                "SELECT id FROM tool_calls WHERE retry_of = ? LIMIT 1", (call.id,),
+            ).fetchone()
+            if previous_retry is not None:
+                raise ValueError("retry source already has a subsequent attempt")
+            self._insert_event(
+                connection, run_id=run.id, sequence=self._next_event_sequence(connection, run.id),
+                event_type="tool.retry_scheduled",
+                payload={"tool_call_id": retry_id, "retry_of": call.id, "attempt": call.attempt + 1},
+                created_at=timestamp,
+            )
+            connection.execute(
+                """
+                INSERT INTO tool_calls (
+                    id, run_id, retry_of, tool_name, arguments_json, risk_level,
+                    execution_kind, idempotent, idempotency_key, status, attempt,
+                    timeout_seconds, created_at, updated_at
+                ) SELECT ?, run_id, id, tool_name, arguments_json, risk_level,
+                    execution_kind, idempotent, idempotency_key, ?, attempt + 1,
+                    timeout_seconds, ?, ? FROM tool_calls WHERE id = ?
+                """,
+                (retry_id, ToolCallStatus.CREATED.value, timestamp, timestamp, call.id),
+            )
+            self._insert_event(
+                connection, run_id=run.id, sequence=self._next_event_sequence(connection, run.id),
+                event_type="tool.created",
+                payload={"tool_call_id": retry_id, "retry_of": call.id, "attempt": call.attempt + 1,
+                         "tool_name": call.tool_name}, created_at=timestamp,
+            )
+            _, retry = self._recovery_records(connection, retry_id)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return retry
 
     def create_tool_call(
         self,
@@ -814,7 +887,7 @@ class SQLiteStore:
         return self._approval_from_row(updated_row)
 
     def get_approval(self, approval_id: str) -> ApprovalRecord:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM approvals WHERE id = ?", (approval_id,)
             ).fetchone()
@@ -825,7 +898,7 @@ class SQLiteStore:
     def get_approval_for_tool_call(
         self, tool_call_id: str
     ) -> ApprovalRecord | None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM approvals WHERE tool_call_id = ?",
                 (tool_call_id,),
@@ -835,7 +908,7 @@ class SQLiteStore:
         return self._approval_from_row(row)
 
     def get_tool_call(self, tool_call_id: str) -> ToolCallRecord:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM tool_calls WHERE id = ?", (tool_call_id,)
             ).fetchone()
@@ -911,6 +984,20 @@ class SQLiteStore:
                     timestamp,
                 ),
             )
+            if to_status is ToolCallStatus.INTERRUPTED:
+                run, _ = self._recovery_records(connection, tool_call_id)
+                if run.status in {RunStatus.RUNNING, RunStatus.WAITING_APPROVAL}:
+                    ensure_run_transition(run.status, RunStatus.RECOVERABLE)
+                    connection.execute(
+                        "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                        (RunStatus.RECOVERABLE.value, timestamp, run.id),
+                    )
+                    self._insert_event(
+                        connection, run_id=run.id,
+                        sequence=self._next_event_sequence(connection, run.id),
+                        event_type="run.recoverable", payload={"tool_call_id": tool_call_id},
+                        created_at=timestamp,
+                    )
             updated_row = connection.execute(
                 "SELECT * FROM tool_calls WHERE id = ?", (tool_call_id,)
             ).fetchone()
@@ -1072,7 +1159,7 @@ class SQLiteStore:
         )
 
     def list_events(self, run_id: str) -> list[EventRecord]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT * FROM events WHERE run_id = ? ORDER BY sequence",
                 (run_id,),
