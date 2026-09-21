@@ -6,6 +6,7 @@ from .models import EventRecord, RunRecord, ToolCallRecord
 from .policies import FailureKind, ToolPolicy, ToolPolicyRegistry
 from .processes import ManagedProcessRunner, ProcessResult, ProcessSpec
 from .recovery import RecoveryCandidate, RecoveryKind, RecoveryManager, RecoveryResolution
+from .redaction import redact, redact_text
 from .state import (
     ExecutionKind,
     InvalidTransition,
@@ -42,4 +43,6 @@ __all__ = [
     "ToolCallStatus",
     "ToolPolicy",
     "ToolPolicyRegistry",
+    "redact",
+    "redact_text",
 ]

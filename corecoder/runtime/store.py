@@ -13,6 +13,7 @@ from pathlib import Path
 from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
 from .models import EventRecord, RunRecord, ToolCallRecord
 from .policies import FailureKind, ToolPolicyRegistry
+from .redaction import redact
 from .state import (
     ExecutionKind,
     RiskLevel,
@@ -1209,7 +1210,7 @@ class SQLiteStore:
                 run_id,
                 sequence,
                 event_type,
-                json.dumps(payload, sort_keys=True),
+                json.dumps(redact(payload), sort_keys=True),
                 created_at,
             ),
         )
