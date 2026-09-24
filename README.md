@@ -2,7 +2,7 @@
 
 # CoreCoder
 
-**The nanoGPT of coding agents. A 1.2k-line engine inside 4,773 readable lines of pure Python: understand how a coding agent actually works, then fork your own.**
+**The nanoGPT of coding agents. A 1.2k-line engine inside 4,939 readable lines of pure Python: understand how a coding agent actually works, then fork your own.**
 
 *learn from it · fork it · ship something better*
 
@@ -25,7 +25,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| Lines of code | ~1,171 engine / 4,773 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
+| Lines of code | ~1,171 engine / 4,939 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
 | Time to read it all | one afternoon | can't (closed) | a few days of slogging | one afternoon |
 | Breakpoint, change, rerun? | yes, every line | no | yes, but there's a lot | yes |
 | What it's for | understand one, then fork your own | production coding assistant | terminal pair-programming | minimal GPT for teaching |
@@ -36,9 +36,9 @@ The nanoGPT column is there as a reference point: minimal, readable, but it teac
 
 I've always felt coding agents get talked about as if they were arcane. Strip a tool like Claude Code or Cursor all the way down and the core is a `while` loop wrapped around a large model, plus seven or eight tools that let it actually do things. The hard part was never the loop; it's everything the loop has to cope with once it meets the real world. CoreCoder is the minimal version that writes that core out honestly.
 
-The engine (loop, model interface, context, tools, sessions) is 1,171 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole committed package is 46 files: 5,546 physical lines, 4,773 net. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime foundation, each documented below.
+The engine (loop, model interface, context, tools, sessions) is 1,171 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole committed package is 46 files: 5,713 physical lines, 4,939 net. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime foundation, each documented below.
 
-And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. 403 tests pass by default; one live-model integration test is opt-in. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. 408 tests pass by default; one live-model integration test is opt-in. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -265,7 +265,7 @@ Each configured server starts as a subprocess at launch, handshakes, and lists i
 
 ## ReliAgent execution and recovery foundation
 
-`corecoder.runtime` exposes the durable Run, ToolCall, Event, and SQLiteStore API alongside approval records, policies, `ManagedProcessRunner`, `RuntimeExecutor`, and `RecoveryManager`. This is an opt-in foundation, not yet wired into the existing CLI or Agent loop.
+`corecoder.runtime` exposes the durable Run, ToolCall, Event, and SQLiteStore API alongside approval records, policies, `ManagedProcessRunner`, `RuntimeExecutor`, and `RecoveryManager`. The Agent loop now routes the built-in `read_file` and approval-gated `write_file` tools through a `RuntimeToolAdapter`; the separate `reliagent` CLI runs fixed JSON workflows and provides `list`, `approve`, `deny`, `resume`, `reconcile`, and `cancel`. Other Agent tools are not migrated yet.
 
 - Approval requests atomically persist the Approval, waiting Run/ToolCall states, and Event. An `allow_once` decision belongs to one ToolCall attempt and its stored arguments; it is not permission for another attempt. Denial cancels that call without spawning a process.
 - Policy declares risk, execution kind, deadline, and retry eligibility. It is not a security sandbox: a tool classified read-only still has the OS permissions of its process.
@@ -275,7 +275,7 @@ Each configured server starts as a subprocess at launch, handshakes, and lists i
 - Run cancellation first commits the cancelled state, closing admission of new calls and retries, then signals active work. In-process operations receive a cooperative `threading.Event`; cancellation cannot force-stop a callable, enforce its deadline, or roll back effects already performed. A returned cancelled status is not proof of effect rollback.
 - Unknown process termination atomically marks the call interrupted and its running/waiting Run recoverable, blocking new execution until reconciliation. Ordinary retry reservation and its scheduling/creation events commit together. Startup also exposes never-started CREATED reservations as `human_required` / `created_not_started`; only explicit `ABANDON` releases them, after which callers may submit a fresh request. Scan never runs or automatically requeues them, and abandonment does not assert success or failure.
 
-Events retain per-Run sequence and ToolCall identifiers for inspection, but Phase 2 does not yet implement hierarchical Trace/Span records, runtime token/cost or aggregate metrics, Eval datasets/scoring, or automatic Agent-loop execution/recovery integration. The existing CLI cost report is separate from those future runtime metrics.
+Events retain per-Run sequence and ToolCall identifiers for inspection, but the project does not yet implement hierarchical Trace/Span records, runtime token/cost or aggregate metrics, or the requested executable Eval harness. Agent-loop integration is intentionally limited to two tools, and recovery is currently exposed by the fixed-workflow CLI rather than the interactive CoreCoder CLI. The existing CLI cost report is separate from those future runtime metrics.
 
 ## Related Projects
 
@@ -289,7 +289,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (403 passing tests plus one opt-in live-model test), `ruff check`, and `compileall`, and make sure they're green. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (408 passing tests plus one opt-in live-model test), `ruff check`, and `compileall`, and make sure they're green. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 

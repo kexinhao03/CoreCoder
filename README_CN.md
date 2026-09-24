@@ -2,7 +2,7 @@
 
 # CoreCoder
 
-**编程 agent 里的 nanoGPT。1.2k 行引擎、整包 4773 行可读的纯 Python，读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
+**编程 agent 里的 nanoGPT。1.2k 行引擎、整包 4939 行可读的纯 Python，读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
 
 *learn from it · fork it · ship something better*
 
@@ -25,7 +25,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1171 行 / 整包 4773 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 1171 行 / 整包 4939 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -36,9 +36,9 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1171 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 46 个文件、物理 5546 行、净 4773 行。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints 和 ReliAgent 运行时基础，下文各有交代。
+引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1171 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 46 个文件、物理 5713 行、净 4939 行。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints 和 ReliAgent 运行时基础，下文各有交代。
 
-它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；默认有 403 个测试通过，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；默认有 408 个测试通过，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -264,7 +264,7 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 ## ReliAgent 执行与恢复基础
 
-`corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。这是按需使用的基础模块，尚未接入现有 CLI 或 Agent 循环。
+`corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。Agent 循环现已通过 `RuntimeToolAdapter` 接入内建 `read_file` 和需要审批的 `write_file`；独立的 `reliagent` CLI 可执行固定 JSON workflow，并提供 `list`、`approve`、`deny`、`resume`、`reconcile`、`cancel`。其他 Agent 工具尚未迁移。
 
 - 审批请求在一个事务里保存 Approval、等待中的 Run/ToolCall 状态和 Event。`allow_once` 绑定一个 ToolCall attempt 及其已存参数，不能授权另一个 attempt。拒绝会取消该调用，不启动进程。
 - 策略声明风险、执行类型、时限与重试资格，不是安全沙箱：被归类为只读的工具仍拥有其进程的操作系统权限。
@@ -275,7 +275,7 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 - 进程终止未知时，同一事务把调用标为 interrupted，把 running/waiting Run 标为 recoverable，核对前阻止新的执行。普通重试的预留、调度和创建事件也一起提交。启动扫描还会把未启动的 CREATED 预留报告为 `human_required` / `created_not_started`，只有显式 `ABANDON` 才释放预留，随后可提交新请求。扫描不会执行或自动重新排队，放弃也不声称成功或失败。
 
-Event 保留每个 Run 内的序号和 ToolCall 标识，方便核查；阶段 2 尚未实现层级 Trace/Span、运行时 token/成本或聚合指标、Eval 数据集/评分，也没有自动 Agent 循环执行/恢复集成。现有 CLI 成本报告与未来的运行时指标是分开的。
+Event 保留每个 Run 内的序号和 ToolCall 标识，方便核查；项目尚未实现层级 Trace/Span、运行时 token/成本或聚合指标，也未完成所要求的可执行 Eval Harness。Agent 循环目前只接入两个工具，恢复入口位于固定 workflow CLI，而不是交互式 CoreCoder CLI。现有 CLI 成本报告与未来的运行时指标是分开的。
 
 ## 相关项目
 
@@ -289,7 +289,7 @@ Event 保留每个 Run 内的序号和 ToolCall 标识，方便核查；阶段 2
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（默认 403 个测试通过，另有一个真实模型测试需显式启用）、`ruff check` 和 `compileall`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`（默认 408 个测试通过，另有一个真实模型测试需显式启用）、`ruff check` 和 `compileall`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 

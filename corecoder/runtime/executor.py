@@ -190,6 +190,12 @@ class RuntimeExecutor:
     def execute_approved_subprocess(self, call_id: str) -> RuntimeResult:
         return self._execute_subprocess(self._approved_call(call_id))
 
+    def execute_recovery_subprocess(self, call_id: str) -> RuntimeResult:
+        call = self._store.get_tool_call(call_id)
+        if call.status is not ToolCallStatus.CREATED or call.retry_of is None:
+            raise ExecutionRefused("created recovery retry required")
+        return self._execute_subprocess(call)
+
     def execute_approved_in_process(
         self, call_id: str, operation: Callable[[dict, threading.Event], str]
     ) -> RuntimeResult:

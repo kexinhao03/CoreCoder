@@ -56,6 +56,31 @@ def wait_until(predicate, timeout):
         time.sleep(0.01)
 
 
+def test_recovery_execution_refuses_an_initial_created_call(running_store):
+    runner = SpyRunner(success_result("must not run"))
+    executor = RuntimeExecutor(
+        running_store,
+        ToolPolicyRegistry({"probe": probe_policy()}),
+        runner,
+    )
+    call = running_store.create_tool_call(
+        run_id="run-1",
+        tool_name="probe",
+        arguments={"argv": [sys.executable, "-c", "print('no')"]},
+        risk_level=RiskLevel.READ_ONLY,
+        execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=True,
+        idempotency_key="initial-call",
+        timeout_seconds=2,
+    )
+
+    with pytest.raises(ExecutionRefused, match="created recovery retry required"):
+        executor.execute_recovery_subprocess(call.id)
+
+    assert runner.calls == []
+    assert running_store.get_tool_call(call.id).status is ToolCallStatus.CREATED
+
+
 def test_cancel_run_settles_waiting_call_without_spawn(running_store):
     runner = SpyRunner(success_result("unused"))
     executor = RuntimeExecutor(
