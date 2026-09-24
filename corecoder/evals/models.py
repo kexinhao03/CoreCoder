@@ -12,7 +12,8 @@ class FaultSchedule:
 class EvaluationCase:
     id: str
     description: str
-    task_spec: str
+    scenario: str
+    input_id: str
     fault_schedule: FaultSchedule
     repeat_count: int
 
@@ -20,16 +21,21 @@ class EvaluationCase:
 @dataclass(frozen=True)
 class EvaluationConfig:
     id: str
-    persistence_enabled: bool
+    max_attempts: int
+    auto_retry: bool
     recovery_enabled: bool
 
 
 @dataclass(frozen=True)
 class EvaluationResult:
     case_id: str
+    case_description: str
+    scenario: str
     config_id: str
     repetition: int
+    input_id: str
     fault_schedule: FaultSchedule
+    passed: bool | None
     task_succeeded: bool | None
     recovery_succeeded: bool | None
     error: str | None
@@ -48,3 +54,5 @@ class RuntimeExecution:
     recovery_succeeded: bool | None
     store: object
     run_id: str
+    effect_observations: dict
+    assertions: dict

@@ -267,3 +267,22 @@ def test_cli_recovers_after_process_exit_and_repeat_resume_is_inert(tmp_path, ca
     assert json.loads(capsys.readouterr().out)["status"] == "succeeded"
     assert store.list_tool_calls(run_id) == persisted_calls
     assert store.list_events(run_id) == events_after_recovery
+
+
+def test_cli_eval_runs_phase3_matrix_and_writes_evidence(tmp_path, capsys):
+    output = tmp_path / "evidence"
+
+    assert main(["eval", "phase3", "--output", str(output)]) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    raw_path = output / "evaluation-results.json"
+    markdown_path = output / "evaluation-report.md"
+    assert result == {
+        "contract_passed_repetitions": 90,
+        "markdown": str(markdown_path),
+        "raw_json": str(raw_path),
+        "total_repetitions": 90,
+    }
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    assert raw["summary"]["contract_passed_repetitions"] == 90
+    assert markdown_path.exists()

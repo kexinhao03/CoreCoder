@@ -6,7 +6,11 @@ import argparse
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from .evals.report import write_markdown, write_raw_result
+from .evals.runner import EvaluationRunner
+from .evals.suites.phase3 import phase3_configurations, phase3_suite
 from .reliagent import ReliAgentRuntime, TaskStep
 from .runtime import (
     ApprovalDecision,
@@ -116,11 +120,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     trace.add_argument("run_id")
     trace.add_argument("--database", type=Path, required=True)
     trace.add_argument("--format", choices=("json",), default="json")
+    evaluation = subparsers.add_parser("eval")
+    evaluation.add_argument("suite", choices=("phase3",))
+    evaluation.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "trace":
         store = SQLiteStore(args.database)
         store.initialize()
         print(json.dumps(TraceService(store).export_run(args.run_id), sort_keys=True))
+        return 0
+    if args.command == "eval":
+        with TemporaryDirectory() as directory:
+            results = EvaluationRunner(
+                Path(directory), phase3_configurations()
+            ).run(phase3_suite())
+        raw_path = write_raw_result(results, args.output)
+        markdown_path = write_markdown(raw_path, args.output)
+        passed = sum(result.passed is True for result in results)
+        print(json.dumps({
+            "contract_passed_repetitions": passed,
+            "markdown": str(markdown_path),
+            "raw_json": str(raw_path),
+            "total_repetitions": len(results),
+        }, sort_keys=True))
         return 0
     store, _executor, runtime, recovery = _components(args.database)
     if args.command == "list":
