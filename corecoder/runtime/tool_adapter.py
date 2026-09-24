@@ -1,0 +1,101 @@
+"""Adapter that routes existing CoreCoder tools through RuntimeExecutor."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import ClassVar
+
+from corecoder.tools.base import Tool
+
+from .approvals import ApprovalDecision, ApprovalRecord
+from .executor import PendingApproval, RuntimeExecutor, RuntimeResult
+from .state import StepStatus, ToolCallStatus
+from .store import SQLiteStore
+
+ApprovalHandler = Callable[[ApprovalRecord], ApprovalDecision]
+
+
+class RuntimeToolAdapter(Tool):
+    """Preserve a CoreCoder tool's schema while durably executing each call."""
+
+    parameters: ClassVar[dict]
+
+    def __init__(
+        self,
+        tool: Tool,
+        store: SQLiteStore,
+        executor: RuntimeExecutor,
+        run_id: str,
+        *,
+        approval_handler: ApprovalHandler | None = None,
+    ) -> None:
+        self._tool = tool
+        self._store = store
+        self._executor = executor
+        self._run_id = run_id
+        self._approval_handler = approval_handler
+        self.name = tool.name
+        self.description = tool.description
+        self.parameters = tool.parameters
+
+    def execute(self, **kwargs) -> str:
+        step = self._store.create_step(
+            self._run_id,
+            sequence=None,
+            title=self.name,
+        )
+        self._store.transition_step(step.id, StepStatus.RUNNING, "step.started")
+        result = self._executor.submit_in_process(
+            self._run_id,
+            self.name,
+            kwargs,
+            self._execute_tool,
+            step_id=step.id,
+        )
+        if isinstance(result, PendingApproval):
+            self._store.transition_step(
+                step.id,
+                StepStatus.WAITING_APPROVAL,
+                "step.waiting_approval",
+            )
+            if self._approval_handler is None:
+                return f"Approval required: {result.approval.id}"
+            decision = self._approval_handler(result.approval)
+            self._store.resolve_approval(result.approval.id, decision)
+            if decision is ApprovalDecision.DENY:
+                self._store.transition_step(
+                    step.id,
+                    StepStatus.CANCELLED,
+                    "step.cancelled",
+                )
+                return f"Approval denied for {self.name}"
+            self._store.transition_step(
+                step.id,
+                StepStatus.RUNNING,
+                "step.resumed",
+            )
+            result = self._executor.execute_approved_in_process(
+                result.call.id,
+                self._execute_tool,
+            )
+        return self._finish_step(step.id, result)
+
+    def _execute_tool(self, arguments: dict, _cancellation) -> str:
+        return self._tool.execute(**arguments)
+
+    def _finish_step(self, step_id: str, result: RuntimeResult) -> str:
+        if result.call.status is ToolCallStatus.SUCCEEDED:
+            self._store.transition_step(
+                step_id,
+                StepStatus.SUCCEEDED,
+                "step.completed",
+            )
+            return result.output
+        status = (
+            StepStatus.CANCELLED
+            if result.call.status is ToolCallStatus.CANCELLED
+            else StepStatus.FAILED
+        )
+        self._store.transition_step(step_id, status, f"step.{status.value}")
+        detail = result.output or result.call.status.value
+        return f"Error executing {self.name}: {detail}"

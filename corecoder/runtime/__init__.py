@@ -17,6 +17,7 @@ from .state import (
     ToolCallStatus,
 )
 from .store import SQLiteStore
+from .tool_adapter import RuntimeToolAdapter
 from .tracing import TraceService
 
 __all__ = [
@@ -44,6 +45,7 @@ __all__ = [
     "RunStatus",
     "RuntimeExecutor",
     "RuntimeResult",
+    "RuntimeToolAdapter",
     "SQLiteStore",
     "StepRecord",
     "StepStatus",

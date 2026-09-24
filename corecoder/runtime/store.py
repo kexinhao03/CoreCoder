@@ -973,14 +973,19 @@ class SQLiteStore:
             ).fetchall()
         return [self._step_from_row(row) for row in rows]
 
-    def create_step(self, run_id: str, *, sequence: int, title: str, step_id: str | None = None) -> StepRecord:
+    def create_step(self, run_id: str, *, sequence: int | None, title: str, step_id: str | None = None) -> StepRecord:
         timestamp = datetime.now(timezone.utc).isoformat()
-        step = StepRecord(step_id or uuid.uuid4().hex, run_id, sequence, title, StepStatus.PENDING, 0, timestamp, timestamp, None, None)
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             if connection.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
                 raise KeyError(f"run not found: {run_id}")
+            if sequence is None:
+                sequence = connection.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM steps WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()[0]
+            step = StepRecord(step_id or uuid.uuid4().hex, run_id, sequence, title, StepStatus.PENDING, 0, timestamp, timestamp, None, None)
             try:
                 connection.execute("INSERT INTO steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
                     step.id, step.run_id, step.sequence, step.title, step.status.value, step.attempt_count,
