@@ -43,6 +43,7 @@ dev = ["pytest>=7.0", "ruff>=0.9.0"]
 
 [project.scripts]
 corecoder = "corecoder.cli:main"
+reliagent = "corecoder.reliagent_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/he-yufeng/CoreCoder"

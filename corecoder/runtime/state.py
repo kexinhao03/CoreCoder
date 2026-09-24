@@ -1,3 +1,4 @@
+
 """Runtime-owned state machines for durable agent execution."""
 
 from enum import Enum
@@ -23,6 +24,16 @@ class ToolCallStatus(str, Enum):
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
+
+
+class StepStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
 
 
 class RiskLevel(str, Enum):
@@ -95,6 +106,16 @@ _TOOL_CALL_TRANSITIONS: dict[ToolCallStatus, frozenset[ToolCallStatus]] = {
     ToolCallStatus.CANCELLED: frozenset(),
 }
 
+_STEP_TRANSITIONS: dict[StepStatus, frozenset[StepStatus]] = {
+    StepStatus.PENDING: frozenset({StepStatus.RUNNING, StepStatus.CANCELLED, StepStatus.SKIPPED}),
+    StepStatus.RUNNING: frozenset({StepStatus.WAITING_APPROVAL, StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.CANCELLED}),
+    StepStatus.WAITING_APPROVAL: frozenset({StepStatus.RUNNING, StepStatus.CANCELLED}),
+    StepStatus.SUCCEEDED: frozenset(),
+    StepStatus.FAILED: frozenset(),
+    StepStatus.SKIPPED: frozenset(),
+    StepStatus.CANCELLED: frozenset(),
+}
+
 
 def ensure_run_transition(current: RunStatus, target: RunStatus) -> None:
     """Validate a Run state change without mutating any state."""
@@ -113,3 +134,8 @@ def ensure_tool_call_transition(
         raise InvalidTransition(
             f"invalid tool call transition: {current.value} -> {target.value}"
         )
+
+
+def ensure_step_transition(current: StepStatus, target: StepStatus) -> None:
+    if target not in _STEP_TRANSITIONS[current]:
+        raise InvalidTransition(f"invalid step transition: {current.value} -> {target.value}")

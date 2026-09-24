@@ -11,15 +11,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
-from .models import EventRecord, RunRecord, ToolCallRecord
+from .models import EventRecord, RunRecord, StepRecord, ToolCallRecord
 from .policies import FailureKind, ToolPolicyRegistry
 from .redaction import redact
 from .state import (
     ExecutionKind,
     RiskLevel,
     RunStatus,
+    StepStatus,
     ToolCallStatus,
     ensure_run_transition,
+    ensure_step_transition,
     ensure_tool_call_transition,
 )
 
@@ -57,7 +59,9 @@ class SQLiteStore:
                     model TEXT NOT NULL,
                     prompt_version TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    ended_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -78,6 +82,21 @@ class SQLiteStore:
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
                     ended_at TEXT
+                    ,step_id TEXT REFERENCES steps(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS steps (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(id),
+                    sequence INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    ended_at TEXT,
+                    UNIQUE (run_id, sequence)
                 );
 
                 CREATE TABLE IF NOT EXISTS approvals (
@@ -105,6 +124,7 @@ class SQLiteStore:
 
                 CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id
                     ON tool_calls(run_id);
+                CREATE INDEX IF NOT EXISTS idx_steps_run_id ON steps(run_id);
                 CREATE INDEX IF NOT EXISTS idx_tool_calls_retry_of
                     ON tool_calls(retry_of);
                 CREATE INDEX IF NOT EXISTS idx_approvals_tool_call_id
@@ -113,6 +133,20 @@ class SQLiteStore:
                     ON events(run_id, sequence);
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(runs)")
+            }
+            if "started_at" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN started_at TEXT")
+            if "ended_at" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN ended_at TEXT")
+            tool_call_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(tool_calls)")
+            }
+            if "step_id" not in tool_call_columns:
+                connection.execute("ALTER TABLE tool_calls ADD COLUMN step_id TEXT")
 
     def create_run(
         self,
@@ -136,6 +170,8 @@ class SQLiteStore:
             prompt_version=prompt_version,
             created_at=timestamp,
             updated_at=timestamp,
+            started_at=None,
+            ended_at=None,
         )
 
         connection = self._connect()
@@ -145,8 +181,8 @@ class SQLiteStore:
                 """
                 INSERT INTO runs (
                     id, goal, workflow, status, workspace, model,
-                    prompt_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    prompt_version, created_at, updated_at, started_at, ended_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.id,
@@ -158,21 +194,17 @@ class SQLiteStore:
                     run.prompt_version,
                     run.created_at,
                     run.updated_at,
+                    run.started_at,
+                    run.ended_at,
                 ),
             )
-            connection.execute(
-                """
-                INSERT INTO events (
-                    run_id, sequence, type, payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    run.id,
-                    1,
-                    "run.created",
-                    json.dumps({"workflow": workflow}, sort_keys=True),
-                    timestamp,
-                ),
+            self._insert_event(
+                connection,
+                run_id=run.id,
+                sequence=1,
+                event_type="run.created",
+                payload={"workflow": workflow},
+                created_at=timestamp,
             )
             connection.commit()
         except Exception:
@@ -204,6 +236,8 @@ class SQLiteStore:
             prompt_version=row["prompt_version"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
         )
 
     def list_runs(
@@ -407,10 +441,10 @@ class SQLiteStore:
                 INSERT INTO tool_calls (
                     id, run_id, retry_of, tool_name, arguments_json, risk_level,
                     execution_kind, idempotent, idempotency_key, status, attempt,
-                    timeout_seconds, created_at, updated_at
+                    timeout_seconds, created_at, updated_at, step_id
                 ) SELECT ?, run_id, id, tool_name, arguments_json, risk_level,
                     execution_kind, idempotent, idempotency_key, ?, attempt + 1,
-                    timeout_seconds, ?, ? FROM tool_calls WHERE id = ?
+                    timeout_seconds, ?, ?, step_id FROM tool_calls WHERE id = ?
                 """,
                 (retry_id, ToolCallStatus.CREATED.value, timestamp, timestamp, call.id),
             )
@@ -497,10 +531,10 @@ class SQLiteStore:
                 INSERT INTO tool_calls (
                     id, run_id, retry_of, tool_name, arguments_json, risk_level,
                     execution_kind, idempotent, idempotency_key, status, attempt,
-                    timeout_seconds, created_at, updated_at
+                    timeout_seconds, created_at, updated_at, step_id
                 ) SELECT ?, run_id, id, tool_name, arguments_json, risk_level,
                     execution_kind, idempotent, idempotency_key, ?, attempt + 1,
-                    timeout_seconds, ?, ? FROM tool_calls WHERE id = ?
+                    timeout_seconds, ?, ?, step_id FROM tool_calls WHERE id = ?
                 """,
                 (retry_id, ToolCallStatus.CREATED.value, timestamp, timestamp, call.id),
             )
@@ -531,6 +565,7 @@ class SQLiteStore:
         idempotency_key: str | None,
         timeout_seconds: int,
         retry_of: str | None = None,
+        step_id: str | None = None,
         tool_call_id: str | None = None,
     ) -> ToolCallRecord:
         resolved_id = tool_call_id or uuid.uuid4().hex
@@ -548,6 +583,12 @@ class SQLiteStore:
                 raise ValueError(
                     f"run cannot accept tool calls: {run_status.value}"
                 )
+            if step_id is not None:
+                step_row = connection.execute("SELECT run_id FROM steps WHERE id = ?", (step_id,)).fetchone()
+                if step_row is None:
+                    raise KeyError(f"step not found: {step_id}")
+                if step_row["run_id"] != run_id:
+                    raise ValueError("step belongs to another run")
 
             attempt = 1
             if retry_of is not None:
@@ -611,7 +652,8 @@ class SQLiteStore:
                     risk_level, execution_kind, idempotent, idempotency_key,
                     status, attempt, timeout_seconds, result_summary,
                     created_at, updated_at, started_at, ended_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ,step_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     call.id,
@@ -631,6 +673,7 @@ class SQLiteStore:
                     call.updated_at,
                     call.started_at,
                     call.ended_at,
+                    step_id,
                 ),
             )
             sequence = connection.execute(
@@ -641,27 +684,18 @@ class SQLiteStore:
                 """,
                 (run_id,),
             ).fetchone()[0]
-            connection.execute(
-                """
-                INSERT INTO events (
-                    run_id, sequence, type, payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    sequence,
-                    "tool.created",
-                    json.dumps(
-                        {
-                            "attempt": attempt,
-                            "retry_of": retry_of,
-                            "tool_call_id": call.id,
-                            "tool_name": tool_name,
-                        },
-                        sort_keys=True,
-                    ),
-                    timestamp,
-                ),
+            self._insert_event(
+                connection,
+                run_id=run_id,
+                sequence=sequence,
+                event_type="tool.created",
+                payload={
+                    "attempt": attempt,
+                    "retry_of": retry_of,
+                    "tool_call_id": call.id,
+                    "tool_name": tool_name,
+                },
+                created_at=timestamp,
             )
             connection.commit()
         except Exception:
@@ -908,6 +942,20 @@ class SQLiteStore:
             return None
         return self._approval_from_row(row)
 
+    def list_approvals(self, run_id: str) -> list[ApprovalRecord]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT approvals.*
+                FROM approvals
+                JOIN tool_calls ON tool_calls.id = approvals.tool_call_id
+                WHERE tool_calls.run_id = ?
+                ORDER BY approvals.requested_at, approvals.id
+                """,
+                (run_id,),
+            ).fetchall()
+        return [self._approval_from_row(row) for row in rows]
+
     def get_tool_call(self, tool_call_id: str) -> ToolCallRecord:
         with closing(self._connect()) as connection:
             row = connection.execute(
@@ -916,6 +964,66 @@ class SQLiteStore:
         if row is None:
             raise KeyError(tool_call_id)
         return self._tool_call_from_row(row)
+
+    def list_steps(self, run_id: str) -> list[StepRecord]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM steps WHERE run_id = ? ORDER BY sequence, id",
+                (run_id,),
+            ).fetchall()
+        return [self._step_from_row(row) for row in rows]
+
+    def create_step(self, run_id: str, *, sequence: int, title: str, step_id: str | None = None) -> StepRecord:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        step = StepRecord(step_id or uuid.uuid4().hex, run_id, sequence, title, StepStatus.PENDING, 0, timestamp, timestamp, None, None)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
+                raise KeyError(f"run not found: {run_id}")
+            try:
+                connection.execute("INSERT INTO steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
+                    step.id, step.run_id, step.sequence, step.title, step.status.value, step.attempt_count,
+                    step.created_at, step.updated_at, step.started_at, step.ended_at,
+                ))
+            except sqlite3.IntegrityError as error:
+                if "steps.run_id, steps.sequence" in str(error):
+                    raise ValueError("step sequence already exists") from error
+                raise
+            self._insert_event(connection, run_id=run_id, sequence=self._next_event_sequence(connection, run_id), event_type="step.created", payload={"step_id": step.id, "sequence": sequence, "title": title}, created_at=timestamp)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return step
+
+    def transition_step(self, step_id: str, to_status: StepStatus, event_type: str) -> StepRecord:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM steps WHERE id = ?", (step_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"step not found: {step_id}")
+            current_status = StepStatus(row["status"])
+            ensure_step_transition(current_status, to_status)
+            started_at = timestamp if to_status is StepStatus.RUNNING and row["started_at"] is None else row["started_at"]
+            ended_at = timestamp if to_status in {StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.CANCELLED} else row["ended_at"]
+            attempt_count = row["attempt_count"] + (
+                current_status is StepStatus.PENDING and to_status is StepStatus.RUNNING
+            )
+            connection.execute("UPDATE steps SET status = ?, attempt_count = ?, updated_at = ?, started_at = ?, ended_at = ? WHERE id = ?", (to_status.value, attempt_count, timestamp, started_at, ended_at, step_id))
+            self._insert_event(connection, run_id=row["run_id"], sequence=self._next_event_sequence(connection, row["run_id"]), event_type=event_type, payload={"step_id": step_id}, created_at=timestamp)
+            updated = connection.execute("SELECT * FROM steps WHERE id = ?", (step_id,)).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self._step_from_row(updated)
 
     def transition_tool_call(
         self,
@@ -971,19 +1079,13 @@ class SQLiteStore:
                 """,
                 (row["run_id"],),
             ).fetchone()[0]
-            connection.execute(
-                """
-                INSERT INTO events (
-                    run_id, sequence, type, payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    row["run_id"],
-                    sequence,
-                    event_type,
-                    json.dumps(event_payload, sort_keys=True),
-                    timestamp,
-                ),
+            self._insert_event(
+                connection,
+                run_id=row["run_id"],
+                sequence=sequence,
+                event_type=event_type,
+                payload=event_payload,
+                created_at=timestamp,
             )
             if to_status is ToolCallStatus.INTERRUPTED:
                 run, _ = self._recovery_records(connection, tool_call_id)
@@ -1028,6 +1130,12 @@ class SQLiteStore:
                 raise KeyError(f"run not found: {run_id}")
 
             ensure_run_transition(RunStatus(row["status"]), to_status)
+            started_at = row["started_at"]
+            if to_status is RunStatus.RUNNING and started_at is None:
+                started_at = timestamp
+            ended_at = row["ended_at"]
+            if to_status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
+                ended_at = timestamp
             sequence = connection.execute(
                 """
                 SELECT COALESCE(MAX(sequence), 0) + 1
@@ -1037,22 +1145,20 @@ class SQLiteStore:
                 (run_id,),
             ).fetchone()[0]
             connection.execute(
-                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
-                (to_status.value, timestamp, run_id),
-            )
-            connection.execute(
                 """
-                INSERT INTO events (
-                    run_id, sequence, type, payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                UPDATE runs
+                SET status = ?, updated_at = ?, started_at = ?, ended_at = ?
+                WHERE id = ?
                 """,
-                (
-                    run_id,
-                    sequence,
-                    event_type,
-                    json.dumps(payload or {}, sort_keys=True),
-                    timestamp,
-                ),
+                (to_status.value, timestamp, started_at, ended_at, run_id),
+            )
+            self._insert_event(
+                connection,
+                run_id=run_id,
+                sequence=sequence,
+                event_type=event_type,
+                payload=payload or {},
+                created_at=timestamp,
             )
             connection.commit()
         except Exception:
@@ -1061,17 +1167,7 @@ class SQLiteStore:
         finally:
             connection.close()
 
-        return RunRecord(
-            id=row["id"],
-            goal=row["goal"],
-            workflow=row["workflow"],
-            status=to_status,
-            workspace=row["workspace"],
-            model=row["model"],
-            prompt_version=row["prompt_version"],
-            created_at=row["created_at"],
-            updated_at=timestamp,
-        )
+        return self.get_run(run_id)
 
     def cancel_run(self, run_id: str) -> RunRecord:
         """Cancel admission and unstarted calls; active work must settle separately."""
@@ -1086,8 +1182,11 @@ class SQLiteStore:
                 raise KeyError(f"run not found: {run_id}")
             ensure_run_transition(RunStatus(row["status"]), RunStatus.CANCELLED)
             connection.execute(
-                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
-                (RunStatus.CANCELLED.value, timestamp, run_id),
+                """
+                UPDATE runs SET status = ?, updated_at = ?, ended_at = ?
+                WHERE id = ?
+                """,
+                (RunStatus.CANCELLED.value, timestamp, timestamp, run_id),
             )
             calls = connection.execute(
                 """
@@ -1251,4 +1350,9 @@ class SQLiteStore:
             updated_at=row["updated_at"],
             started_at=row["started_at"],
             ended_at=row["ended_at"],
+            step_id=row["step_id"],
         )
+
+    @staticmethod
+    def _step_from_row(row: sqlite3.Row) -> StepRecord:
+        return StepRecord(row["id"], row["run_id"], row["sequence"], row["title"], StepStatus(row["status"]), row["attempt_count"], row["created_at"], row["updated_at"], row["started_at"], row["ended_at"])

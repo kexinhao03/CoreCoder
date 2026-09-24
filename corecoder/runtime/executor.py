@@ -107,12 +107,13 @@ class RuntimeExecutor:
         argv: Sequence[str],
         *,
         tool_call_id: str | None = None,
+        step_id: str | None = None,
         approval_id: str | None = None,
     ) -> PendingApproval | RuntimeResult:
         argv = _validated_argv(argv)
         call = self._submit(
             run_id, tool_name, {"argv": list(argv)}, ExecutionKind.SUBPROCESS,
-            tool_call_id=tool_call_id, approval_id=approval_id,
+            tool_call_id=tool_call_id, step_id=step_id, approval_id=approval_id,
         )
         if isinstance(call, PendingApproval):
             return call
@@ -126,11 +127,12 @@ class RuntimeExecutor:
         operation: Callable[[dict, threading.Event], str],
         *,
         tool_call_id: str | None = None,
+        step_id: str | None = None,
         approval_id: str | None = None,
     ) -> PendingApproval | RuntimeResult:
         call = self._submit(
             run_id, tool_name, arguments, ExecutionKind.IN_PROCESS,
-            tool_call_id=tool_call_id, approval_id=approval_id,
+            tool_call_id=tool_call_id, step_id=step_id, approval_id=approval_id,
         )
         if isinstance(call, PendingApproval):
             return call
@@ -144,6 +146,7 @@ class RuntimeExecutor:
         execution_kind: ExecutionKind,
         *,
         tool_call_id: str | None,
+        step_id: str | None,
         approval_id: str | None,
     ) -> PendingApproval | ToolCallRecord:
         run = self._require_running(run_id)
@@ -167,6 +170,7 @@ class RuntimeExecutor:
                 idempotent=policy.idempotent,
                 idempotency_key=idempotency_key,
                 timeout_seconds=policy.timeout_seconds,
+                step_id=step_id,
                 tool_call_id=tool_call_id,
             )
             if policy.requires_approval:

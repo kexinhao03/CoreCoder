@@ -2,7 +2,8 @@
 
 from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
 from .executor import ExecutionRefused, PendingApproval, RuntimeExecutor, RuntimeResult
-from .models import EventRecord, RunRecord, ToolCallRecord
+from .metrics import Availability, MetricsService, RunMetrics
+from .models import EventRecord, RunRecord, StepRecord, ToolCallRecord
 from .policies import FailureKind, ToolPolicy, ToolPolicyRegistry
 from .processes import ManagedProcessRunner, ProcessResult, ProcessSpec
 from .recovery import RecoveryCandidate, RecoveryKind, RecoveryManager, RecoveryResolution
@@ -12,20 +13,24 @@ from .state import (
     InvalidTransition,
     RiskLevel,
     RunStatus,
+    StepStatus,
     ToolCallStatus,
 )
 from .store import SQLiteStore
+from .tracing import TraceService
 
 __all__ = [
     "ApprovalDecision",
     "ApprovalRecord",
     "ApprovalStatus",
+    "Availability",
     "EventRecord",
     "ExecutionKind",
     "ExecutionRefused",
     "FailureKind",
     "InvalidTransition",
     "ManagedProcessRunner",
+    "MetricsService",
     "PendingApproval",
     "ProcessResult",
     "ProcessSpec",
@@ -34,15 +39,19 @@ __all__ = [
     "RecoveryManager",
     "RecoveryResolution",
     "RiskLevel",
+    "RunMetrics",
     "RunRecord",
     "RunStatus",
     "RuntimeExecutor",
     "RuntimeResult",
     "SQLiteStore",
+    "StepRecord",
+    "StepStatus",
     "ToolCallRecord",
     "ToolCallStatus",
     "ToolPolicy",
     "ToolPolicyRegistry",
+    "TraceService",
     "redact",
     "redact_text",
 ]

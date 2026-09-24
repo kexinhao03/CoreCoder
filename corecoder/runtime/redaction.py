@@ -31,7 +31,12 @@ def redact(value: Any) -> Any:
         for key, item in value.items():
             exported_key = key if isinstance(key, str) else _unique_export_key(key, used_keys)
             used_keys.add(exported_key)
-            copied[exported_key] = _REDACTED if _is_sensitive_key(key) else redact(item)
+            if _is_sensitive_key(key):
+                copied[exported_key] = _REDACTED
+            elif isinstance(key, str) and key.lower() == "argv" and isinstance(item, (list, tuple)):
+                copied[exported_key] = _redact_argv(item)
+            else:
+                copied[exported_key] = redact(item)
         return copied
     if isinstance(value, list):
         return [redact(item) for item in value]
@@ -52,6 +57,31 @@ def redact_text(text: str) -> str:
 
 def _is_sensitive_key(key: object) -> bool:
     return isinstance(key, str) and any(part in key.lower() for part in _SENSITIVE_KEY_PARTS)
+
+
+def _redact_argv(argv: list[Any] | tuple[Any, ...]) -> list[Any] | tuple[Any, ...]:
+    redacted = []
+    redact_next = False
+    for argument in argv:
+        if redact_next:
+            redacted.append(_REDACTED)
+            redact_next = False
+            continue
+        if not isinstance(argument, str):
+            redacted.append(redact(argument))
+            continue
+        name, separator, _value = argument.partition("=")
+        if separator and _is_sensitive_argv_name(name):
+            redacted.append(f"{name}={_REDACTED}")
+            continue
+        redacted.append(redact_text(argument))
+        redact_next = argument.startswith("-") and _is_sensitive_argv_name(argument)
+    return tuple(redacted) if isinstance(argv, tuple) else redacted
+
+
+def _is_sensitive_argv_name(name: str) -> bool:
+    normalized = name.lstrip("-").replace("-", "_")
+    return _is_sensitive_key(normalized)
 
 
 def _unique_export_key(key: object, used_keys: set[str]) -> str:

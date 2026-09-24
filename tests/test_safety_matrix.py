@@ -6,6 +6,8 @@ model is told. These combinations are the part of CoreCoder that must never
 be wrong, because it is where readers copy the pattern from.
 """
 
+from typing import ClassVar
+
 import pytest
 
 from corecoder import Agent
@@ -32,7 +34,7 @@ class _BoomTool(Tool):
 
     name = "boom"
     description = "raises KeyboardInterrupt"
-    parameters = {"type": "object", "properties": {}}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}}
 
     def execute(self):
         raise KeyboardInterrupt

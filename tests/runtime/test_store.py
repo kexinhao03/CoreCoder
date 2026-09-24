@@ -144,6 +144,24 @@ def test_create_run_persists_state_and_created_event(tmp_path):
     ]
 
 
+def test_run_records_start_and_end_timestamps(store_with_run):
+    created = store_with_run.get_run("run-1")
+
+    running = store_with_run.transition_run(
+        "run-1", RunStatus.RUNNING, "run.started"
+    )
+    completed = store_with_run.transition_run(
+        "run-1", RunStatus.SUCCEEDED, "run.completed"
+    )
+
+    assert created.started_at is None
+    assert created.ended_at is None
+    assert running.started_at is not None
+    assert running.ended_at is None
+    assert completed.started_at == running.started_at
+    assert completed.ended_at is not None
+
+
 def test_run_transition_updates_state_and_appends_event(store_with_run):
     updated = store_with_run.transition_run(
         "run-1",

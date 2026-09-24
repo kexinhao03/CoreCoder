@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .state import ExecutionKind, RiskLevel, RunStatus, ToolCallStatus
+from .state import ExecutionKind, RiskLevel, RunStatus, StepStatus, ToolCallStatus
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,8 @@ class RunRecord:
     prompt_version: str
     created_at: str
     updated_at: str
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,21 @@ class ToolCallRecord:
     attempt: int
     timeout_seconds: int
     result_summary: str | None
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    ended_at: str | None
+    step_id: str | None = None
+
+
+@dataclass(frozen=True)
+class StepRecord:
+    id: str
+    run_id: str
+    sequence: int
+    title: str
+    status: StepStatus
+    attempt_count: int
     created_at: str
     updated_at: str
     started_at: str | None
