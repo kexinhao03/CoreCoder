@@ -42,7 +42,7 @@
 - Produces `build_definition(workspace: Path, run_id: str) -> WorkflowDefinition` and `ArtifactVerifier.verify_completed_experiment(...)`.
 - Fixture commands consume only explicit argv and print one sorted JSON object on success.
 
-- [ ] **Step 1: Add the fixed dataset and failing fixture tests**
+- [x] **Step 1: Add the fixed dataset and failing fixture tests**
 
 Use this exact ten-row dataset so expected values are derived independently:
 
@@ -62,13 +62,13 @@ x,y
 
 Tests execute `train.py` as a real subprocess and assert literal values: sample count `10`, intercept `1.0`, slope `2.0`, MSE `0.0`, R² `1.0`, dataset SHA-256 `33383eeafabf9ba13fc7fed3075550d72846574c56fd1ac5e0d1afe1067aed20`, one parseable marker, and no remaining `metrics.tmp.json`. A malformed CSV test must fail without publishing metrics.
 
-- [ ] **Step 2: Run the fixture tests and verify RED**
+- [x] **Step 2: Run the fixture tests and verify RED**
 
 Run: `.venv/bin/python -m pytest -q tests/workflows/test_ml_experiment_fixture.py`
 
 Expected: collection fails because `corecoder.workflows.ml_experiment` and fixture scripts do not exist.
 
-- [ ] **Step 3: Implement the minimal fixture scripts**
+- [x] **Step 3: Implement the minimal fixture scripts**
 
 `train.py` must parse finite floats with `csv.DictReader`, compute OLS using the formulas in v2, append this JSON line and fsync it:
 
@@ -88,11 +88,11 @@ Then write sorted JSON to `metrics.tmp.json`, flush/fsync, call `os.replace`, an
 
 `verify_effect.py` parses every line and prints `effect_count`, `duplicate_effect`, and `effects_file_sha256`; any foreign id/hash or count other than one exits nonzero.
 
-- [ ] **Step 4: Implement workflow definitions and path validation**
+- [x] **Step 4: Implement workflow definitions and path validation**
 
 Use exact constants `workflow_name="ml_experiment"`, `workflow_version="1"`, `model="deterministic"`, `config_version="ml-experiment-v1"`. `resolve_workspace()` rejects missing/non-directory paths. `ArtifactPaths.for_run()` resolves fixed workspace-local paths and checks each with `Path.is_relative_to(resolved_workspace)`. `definition_hash` is SHA-256 over stable sorted JSON covering step key, fixture/data digests, argv template, policy fields, and output templates. `experiment_id` is SHA-256 of `run_id + workflow_version + run_experiment.definition_hash`. The run_experiment persisted arguments include `experiment_id`, `definition_hash`, and `workspace`; approval summaries/events therefore bind and expose those facts together with the ToolCall attempt.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run: `.venv/bin/python -m pytest -q tests/workflows/test_ml_experiment_fixture.py`
 
