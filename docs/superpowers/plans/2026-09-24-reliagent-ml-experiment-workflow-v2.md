@@ -184,21 +184,21 @@ Commit: `feat(runtime): persist workflow fault and process evidence`
 - `RuntimeFaultInjector.checkpoint(call: ToolCallRecord, checkpoint: str) -> None`.
 - Checkpoints are exactly `environment_after_start` and `experiment_after_effect`.
 
-- [ ] **Step 1: Add failing checkpoint-order tests**
+- [x] **Step 1: Add failing checkpoint-order tests**
 
 Use a catchable fake exit callable only in unit tests. Assert environment injection observes persisted `tool.started` before runner invocation. Assert experiment injection occurs after successful ProcessResult and `record_process_evidence`, but before `tool.completed`. Assert a triggered plan never exits twice and a normal Run never consults an environment variable.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m pytest -q tests/runtime/test_faults.py tests/runtime/test_executor.py`
 
 Expected: missing injector parameter/checkpoints.
 
-- [ ] **Step 3: Implement runtime-owned checkpoints**
+- [x] **Step 3: Implement runtime-owned checkpoints**
 
 Call the first checkpoint immediately after `_start_call` and before cancellation registration/runner execution. After a successful or failed child return, persist ProcessEvidence, then call `experiment_after_effect` before any terminal ToolCall transition. `RuntimeFaultInjector` obtains the Step key through Store facts, atomically triggers the matching plan, flushes no user output itself, and calls injected `exit_process(exit_code)`; CLI construction uses `os._exit`, unit tests inject a raising callable.
 
-- [ ] **Step 4: Verify GREEN and regression**
+- [x] **Step 4: Verify GREEN and regression**
 
 Run focused tests and `.venv/bin/python -m pytest -q tests/runtime`.
 

@@ -2,7 +2,7 @@
 
 from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
 from .executor import ExecutionRefused, PendingApproval, RuntimeExecutor, RuntimeResult
-from .faults import FaultCheckpoint, FaultPlanState
+from .faults import FaultCheckpoint, FaultPlanState, RuntimeFaultInjector
 from .metrics import Availability, MetricsService, RunMetrics
 from .models import (
     EventRecord,
@@ -59,6 +59,7 @@ __all__ = [
     "RunRecord",
     "RunStatus",
     "RuntimeExecutor",
+    "RuntimeFaultInjector",
     "RuntimeResult",
     "RuntimeToolAdapter",
     "SQLiteStore",

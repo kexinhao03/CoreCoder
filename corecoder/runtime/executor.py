@@ -15,6 +15,7 @@ from .approvals import (
     ApprovalStatus,
     summarize_arguments,
 )
+from .faults import FaultCheckpoint, RuntimeFaultInjector
 from .models import RunRecord, ToolCallRecord
 from .policies import FailureKind, ToolPolicyRegistry
 from .processes import ManagedProcessRunner, ProcessResult, ProcessSpec
@@ -58,10 +59,12 @@ class RuntimeExecutor:
         store: SQLiteStore,
         policies: ToolPolicyRegistry,
         process_runner: ManagedProcessRunner | None = None,
+        fault_injector: RuntimeFaultInjector | None = None,
     ) -> None:
         self._store = store
         self._policies = policies
         self._process_runner = process_runner or ManagedProcessRunner()
+        self._fault_injector = fault_injector
         self._active_cancellations: dict[str, tuple[str, threading.Event]] = {}
         self._cancellation_lock = threading.Lock()
 
@@ -292,6 +295,10 @@ class RuntimeExecutor:
             raise ExecutionRefused("subprocess policy required")
         # Validate persisted argv before claiming the call has started.
         call = self._start_call(call)
+        if self._fault_injector is not None:
+            self._fault_injector.checkpoint(
+                call, FaultCheckpoint.ENVIRONMENT_AFTER_START.value
+            )
         cancellation = self._register_cancellation(call)
         try:
             spec = ProcessSpec(
@@ -305,6 +312,16 @@ class RuntimeExecutor:
                 result = ProcessResult(None, "", "", 0.0, FailureKind.CANCELLED, True)
             else:
                 result = self._process_runner.run(spec, cancellation)
+            if result.process_evidence is not None:
+                self._store.record_process_evidence(call.id, result.process_evidence)
+            if (
+                self._fault_injector is not None
+                and result.failure_kind is None
+                and result.exit_code == 0
+            ):
+                self._fault_injector.checkpoint(
+                    call, FaultCheckpoint.EXPERIMENT_AFTER_EFFECT.value
+                )
         finally:
             self._unregister_cancellation(call.id)
 
