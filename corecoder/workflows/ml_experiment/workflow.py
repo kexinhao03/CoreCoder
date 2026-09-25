@@ -78,7 +78,11 @@ class MLExperimentWorkflow:
     def definition(self, run_id: str) -> WorkflowDefinition:
         return build_definition(self.workspace, run_id)
 
-    def create(self, fault: str | None = None) -> RunRecord:
+    def create(
+        self,
+        fault: str | None = None,
+        on_created: Callable[[RunRecord], None] | None = None,
+    ) -> RunRecord:
         if fault is not None and fault not in _FAULTS:
             raise ValueError(f"unknown ML workflow fault: {fault}")
         run_id = uuid.uuid4().hex
@@ -103,10 +107,15 @@ class MLExperimentWorkflow:
                 checkpoint=fault,
                 exit_code=exit_code,
             )
+        if on_created is not None:
+            on_created(self.store.get_run(run.id))
         self.runtime.resume(
             run.id, steps=tasks, step_metadata=self._metadata(definition)
         )
         return self.store.get_run(run.id)
+
+    def status(self, run_id: str) -> WorkflowStatus:
+        return self._status(run_id)
 
     def resume(self, run_id: str) -> WorkflowStatus:
         run = self.store.get_run(run_id)

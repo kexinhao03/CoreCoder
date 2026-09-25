@@ -20,6 +20,7 @@ from .reconcile import (
     ReconciliationDecision,
     ReconciliationResult,
 )
+from .report import MLExperimentReportService
 from .workflow import MLExperimentWorkflow, WorkflowStatus
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "ArtifactPaths",
     "ArtifactVerifier",
     "EffectEvidence",
+    "MLExperimentReportService",
     "MLExperimentWorkflow",
     "MLReconciliationService",
     "NormalizedMetrics",

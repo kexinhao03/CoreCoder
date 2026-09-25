@@ -20,17 +20,21 @@ class TraceService:
         events = self._store.list_events(run_id)
         calls = self._store.list_tool_calls(run_id)
         required_events = {
-            ToolCallStatus.SUCCEEDED: "tool.completed",
-            ToolCallStatus.FAILED: "tool.failed",
-            ToolCallStatus.TIMED_OUT: "tool.timed_out",
-            ToolCallStatus.CANCELLED: "tool.cancelled",
-            ToolCallStatus.INTERRUPTED: "tool.interrupted",
+            ToolCallStatus.SUCCEEDED: ("tool.completed", "tool.reconciled"),
+            ToolCallStatus.FAILED: ("tool.failed",),
+            ToolCallStatus.TIMED_OUT: ("tool.timed_out",),
+            ToolCallStatus.CANCELLED: ("tool.cancelled",),
+            ToolCallStatus.INTERRUPTED: ("tool.interrupted",),
         }
         missing = []
         for call in calls:
             required = required_events.get(call.status)
-            if required and not any(event.type == required and event.payload.get("tool_call_id") == call.id for event in events):
-                missing.append({"tool_call_id": call.id, "event": required})
+            if required and not any(
+                event.type in required
+                and event.payload.get("tool_call_id") == call.id
+                for event in events
+            ):
+                missing.append({"tool_call_id": call.id, "event": required[0]})
         return {
             "schema_version": "1.0",
             "run": _record(run),

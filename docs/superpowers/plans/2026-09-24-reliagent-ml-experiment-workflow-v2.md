@@ -309,23 +309,23 @@ Commit: `feat(workflow): reconcile uncertain ML experiment effects`
 - `write_report(raw: dict, report_dir: Path) -> tuple[Path, Path]` uses atomic replacement.
 - CLI adds `workflow ml start|resume|report`; control commands accept either legacy `--database` or ML `--workspace`.
 
-- [ ] **Step 1: Add failing report-source and integrity tests**
+- [x] **Step 1: Add failing report-source and integrity tests**
 
 Create a real successful Workflow. Mutate current metrics values without changing the persisted extraction result and assert report generation rejects on hash mismatch rather than adopting file values. Assert Run/Steps/approval/trace integrity, persisted normalized result, persisted effect result, Runtime Metrics, reconciliation evidence, Git commit/dirty status, platform/Python, token availability false, and conclusion boundaries are present. Repeated report writes must be byte-identical and leave Runtime Events unchanged.
 
-- [ ] **Step 2: Verify RED and implement report service**
+- [x] **Step 2: Verify RED and implement report service**
 
 Parse the latest succeeded `extract_metrics` and `verify_effect` ToolCall result summaries as the only metric/effect content. Recompute files solely to match persisted hashes. Render Markdown only from the already-built raw dict. Write sorted/indented JSON and Markdown through sibling temp files plus fsync/os.replace; include no timestamp.
 
-- [ ] **Step 3: Add failing CLI normal and fault subprocess tests**
+- [x] **Step 3: Add failing CLI normal and fault subprocess tests**
 
 Run `python -m corecoder.reliagent_cli workflow ml start` against a real temporary workspace. Assert NDJSON first line is a flushed created Run record. For exit 86, assert the child actually returns 86, then a separate resume process creates a recovery attempt and stops at approval. For exit 87, approve then resume in a child, assert exit 87 and artifacts exist, then separate resume reports recoverable with zero retry. Exercise completed reconciliation, explicit next resume, report, denial, repeat resume, fixed paths, and path escape rejection.
 
-- [ ] **Step 4: Implement CLI while preserving legacy commands**
+- [x] **Step 4: Implement CLI while preserving legacy commands**
 
 Always derive ML database as `<workspace>/.reliagent/runtime.sqlite`. `workflow ml start` prints/flushes a `run_created` JSON line before execution; subsequent non-fault completion prints status JSON. Add `--inject-process-loss` with only the two enum values. `reconcile` keeps the legacy positional resolution/`--database` form and adds `--decision completed|retry|unresolved --workspace` for ML. Stable Workflow status contains exactly the v2 minimum fields plus report command when available.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run all Workflow CLI tests and existing `tests/test_reliagent_cli.py`.
 

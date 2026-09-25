@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import uuid
 from collections.abc import Sequence
+from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -29,6 +32,18 @@ from .runtime import (
     ToolPolicyRegistry,
     TraceService,
 )
+from .workflows.ml_experiment import MLExperimentWorkflow
+from .workflows.ml_experiment.reconcile import (
+    MLReconciliationService,
+    ReconciliationDecision,
+)
+from .workflows.ml_experiment.report import MLExperimentReportService
+
+
+def _add_storage_arguments(parser: argparse.ArgumentParser) -> None:
+    storage = parser.add_mutually_exclusive_group(required=True)
+    storage.add_argument("--database", type=Path)
+    storage.add_argument("--workspace", type=Path)
 
 
 def _task_from_file(path: Path) -> tuple[str, Path, tuple[TaskStep, ...]]:
@@ -57,8 +72,16 @@ def _task_from_file(path: Path) -> tuple[str, Path, tuple[TaskStep, ...]]:
 
 
 def _components(database: Path):
-    store = SQLiteStore(database)
-    store.initialize()
+    database.parent.mkdir(parents=True, exist_ok=True)
+    if database.exists():
+        store = SQLiteStore(database)
+        store.initialize()
+    else:
+        initializing = database.with_name(f".{database.name}.{uuid.uuid4().hex}.initializing")
+        store = SQLiteStore(initializing)
+        store.initialize()
+        os.replace(initializing, database)
+        store = SQLiteStore(database)
     read_only = ToolPolicy(
         risk_level=RiskLevel.READ_ONLY,
         execution_kind=ExecutionKind.SUBPROCESS,
@@ -100,32 +123,77 @@ def main(argv: Sequence[str] | None = None) -> int:
             command.add_argument("run_id")
         command.add_argument("task_file", type=Path)
         command.add_argument("--database", type=Path, required=True)
+    workflow_command = subparsers.add_parser("workflow")
+    workflow_names = workflow_command.add_subparsers(dest="workflow_name", required=True)
+    ml = workflow_names.add_parser("ml")
+    ml_actions = ml.add_subparsers(dest="workflow_action", required=True)
+    ml_start = ml_actions.add_parser("start")
+    ml_start.add_argument("--workspace", type=Path, required=True)
+    ml_start.add_argument("--inject-process-loss", choices=(
+        "environment_after_start", "experiment_after_effect"
+    ))
+    for action in ("resume", "report"):
+        action_parser = ml_actions.add_parser(action)
+        action_parser.add_argument("run_id")
+        action_parser.add_argument("--workspace", type=Path, required=True)
     listing = subparsers.add_parser("list")
-    listing.add_argument("--database", type=Path, required=True)
+    _add_storage_arguments(listing)
     for name in ("approve", "deny"):
         approval = subparsers.add_parser(name)
         approval.add_argument("approval_id")
-        approval.add_argument("--database", type=Path, required=True)
+        _add_storage_arguments(approval)
     reconcile = subparsers.add_parser("reconcile")
     reconcile.add_argument("tool_call_id")
     reconcile.add_argument(
-        "resolution",
+        "resolution", nargs="?",
         choices=tuple(resolution.value for resolution in RecoveryResolution),
     )
-    reconcile.add_argument("--database", type=Path, required=True)
+    reconcile.add_argument(
+        "--decision", choices=tuple(item.value for item in ReconciliationDecision)
+    )
+    _add_storage_arguments(reconcile)
     cancel = subparsers.add_parser("cancel")
     cancel.add_argument("run_id")
-    cancel.add_argument("--database", type=Path, required=True)
+    _add_storage_arguments(cancel)
     trace = subparsers.add_parser("trace")
     trace.add_argument("run_id")
-    trace.add_argument("--database", type=Path, required=True)
+    _add_storage_arguments(trace)
     trace.add_argument("--format", choices=("json",), default="json")
     evaluation = subparsers.add_parser("eval")
     evaluation.add_argument("suite", choices=("phase3",))
     evaluation.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.command == "workflow":
+        workflow = MLExperimentWorkflow(args.workspace)
+        if args.workflow_action == "start":
+            def announce(run):
+                print(
+                    json.dumps({"event": "run_created", "run_id": run.id}, sort_keys=True),
+                    flush=True,
+                )
+
+            run = workflow.create(args.inject_process_loss, on_created=announce)
+            print(json.dumps(asdict(workflow.status(run.id)), sort_keys=True))
+            return 0
+        if args.workflow_action == "resume":
+            print(json.dumps(asdict(workflow.resume(args.run_id)), sort_keys=True))
+            return 0
+        report = MLExperimentReportService(workflow)
+        raw_path, markdown_path = report.write(report.build(args.run_id))
+        print(json.dumps({
+            "markdown": str(markdown_path),
+            "raw_json": str(raw_path),
+            "run_id": args.run_id,
+            "status": "succeeded",
+        }, sort_keys=True))
+        return 0
+    database = (
+        args.workspace / ".reliagent" / "runtime.sqlite"
+        if getattr(args, "workspace", None) is not None
+        else getattr(args, "database", None)
+    )
     if args.command == "trace":
-        store = SQLiteStore(args.database)
+        store = SQLiteStore(database)
         store.initialize()
         print(json.dumps(TraceService(store).export_run(args.run_id), sort_keys=True))
         return 0
@@ -144,7 +212,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "total_repetitions": len(results),
         }, sort_keys=True))
         return 0
-    store, _executor, runtime, recovery = _components(args.database)
+    if getattr(args, "workspace", None) is not None:
+        ml_workflow = MLExperimentWorkflow(args.workspace)
+        store = ml_workflow.store
+        _executor = ml_workflow.executor
+        recovery = ml_workflow.recovery
+        runtime = ml_workflow.runtime
+    else:
+        ml_workflow = None
+        store, _executor, runtime, recovery = _components(database)
     if args.command == "list":
         candidates = recovery.scan()
         approvals = [
@@ -191,6 +267,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         }, sort_keys=True))
         return 0
     if args.command == "reconcile":
+        if ml_workflow is not None:
+            if args.decision is None:
+                parser.error("--decision is required with --workspace")
+            result = MLReconciliationService(ml_workflow).reconcile(
+                args.tool_call_id, ReconciliationDecision(args.decision)
+            )
+            print(json.dumps(asdict(result), sort_keys=True, default=lambda item: item.value))
+            return 0
+        if args.resolution is None:
+            parser.error("resolution is required with --database")
         call = recovery.reconcile(
             args.tool_call_id,
             RecoveryResolution(args.resolution),
