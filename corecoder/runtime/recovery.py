@@ -55,6 +55,17 @@ class RecoveryManager:
             if run.status in terminal_runs:
                 continue
             if call.status is ToolCallStatus.INTERRUPTED:
+                reconciliations = self.store.list_reconciliation_evidence(call.id)
+                has_retry_child = any(
+                    candidate.retry_of == call.id
+                    for candidate in self.store.list_tool_calls(run_id=call.run_id)
+                )
+                if (
+                    reconciliations
+                    and reconciliations[-1].decision == "retry"
+                    and has_retry_child
+                ):
+                    continue
                 run, call = self.store.mark_interrupted_run_recoverable(call.id)
                 reason = self.store.get_interruption_reason(call.id) or "termination_unknown"
                 policy = self.registry.resolve(call.tool_name)

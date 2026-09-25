@@ -7,6 +7,7 @@ from corecoder.runtime.state import (
     InvalidTransition,
     RiskLevel,
     RunStatus,
+    StepStatus,
     ToolCallStatus,
 )
 from corecoder.runtime.store import SQLiteStore
@@ -126,6 +127,73 @@ def test_versioned_step_identity_is_durable_and_unique(store_with_run):
             step_key="run_experiment",
             definition_version="1",
             definition_hash="a" * 64,
+        )
+
+
+def test_completed_workflow_reconciliation_rolls_back_on_event_failure(tmp_path):
+    store = SQLiteStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    store.create_run(
+        goal="experiment",
+        workflow="ml_experiment",
+        workspace=tmp_path,
+        model="deterministic",
+        prompt_version="ml-experiment-v1",
+        run_id="run-ml",
+    )
+    store.transition_run("run-ml", RunStatus.RUNNING, "run.started")
+    step = store.create_step(
+        "run-ml",
+        sequence=1,
+        title="experiment",
+        step_key="run_experiment",
+        definition_version="1",
+        definition_hash="a" * 64,
+    )
+    store.transition_step(step.id, StepStatus.RUNNING, "step.started")
+    call = store.create_tool_call(
+        run_id="run-ml",
+        step_id=step.id,
+        tool_name="ml_experiment.run_experiment",
+        arguments={"argv": ["train"]},
+        risk_level=RiskLevel.EXTERNAL_EFFECT,
+        execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=False,
+        idempotency_key=None,
+        timeout_seconds=30,
+    )
+    store.transition_tool_call(call.id, ToolCallStatus.RUNNING, "tool.started")
+    store.transition_tool_call(call.id, ToolCallStatus.INTERRUPTED, "tool.interrupted")
+    before = (
+        store.get_run("run-ml"),
+        store.get_tool_call(call.id),
+        store.list_steps("run-ml"),
+        store.list_events("run-ml"),
+    )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_resumed_event BEFORE INSERT ON events
+            WHEN NEW.type = 'run.resumed'
+            BEGIN SELECT RAISE(ABORT, 'injected reconciliation failure'); END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected reconciliation failure"):
+        store.reconcile_workflow_completed(call.id, {"verified": True})
+
+    assert (
+        store.get_run("run-ml"),
+        store.get_tool_call(call.id),
+        store.list_steps("run-ml"),
+        store.list_events("run-ml"),
+    ) == before
+    assert store.list_reconciliation_evidence(call.id) == []
+    with pytest.raises(ValueError, match="dedicated reconciliation"):
+        store.transition_tool_call(call.id, ToolCallStatus.SUCCEEDED, "tool.completed")
+    with pytest.raises(ValueError, match="dedicated reconciliation"):
+        store.reconcile_interrupted_tool_call(
+            call.id, ToolCallStatus.SUCCEEDED, "confirmed_succeeded"
         )
 
 

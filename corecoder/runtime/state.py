@@ -70,6 +70,7 @@ _RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.PAUSED: frozenset({RunStatus.RUNNING, RunStatus.CANCELLED}),
     RunStatus.RECOVERABLE: frozenset({
         RunStatus.RUNNING,
+        RunStatus.WAITING_APPROVAL,
         RunStatus.FAILED,
         RunStatus.CANCELLED,
     }),

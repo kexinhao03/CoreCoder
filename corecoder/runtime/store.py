@@ -10,11 +10,17 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
+from .approvals import (
+    ApprovalDecision,
+    ApprovalRecord,
+    ApprovalStatus,
+    summarize_arguments,
+)
 from .models import (
     EventRecord,
     FaultPlanRecord,
     ProcessEvidenceRecord,
+    ReconciliationEvidenceRecord,
     RunRecord,
     StepRecord,
     ToolCallRecord,
@@ -540,6 +546,10 @@ class SQLiteStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             run, call = self._recovery_records(connection, call_id)
+            if run.workflow == "ml_experiment" and status is ToolCallStatus.SUCCEEDED:
+                raise ValueError(
+                    "interrupted ML success requires the dedicated reconciliation transaction"
+                )
             self._resolve_recovery(connection, run, call, status, resolution, timestamp)
             _, updated = self._recovery_records(connection, call_id)
             connection.commit()
@@ -1183,6 +1193,14 @@ class SQLiteStore:
             if row is None:
                 raise KeyError(f"tool call not found: {tool_call_id}")
 
+            if (
+                ToolCallStatus(row["status"]) is ToolCallStatus.INTERRUPTED
+                and to_status is ToolCallStatus.SUCCEEDED
+            ):
+                raise ValueError(
+                    "interrupted success requires the dedicated reconciliation transaction"
+                )
+
             ensure_tool_call_transition(
                 ToolCallStatus(row["status"]), to_status
             )
@@ -1567,6 +1585,292 @@ class SQLiteStore:
                 (tool_call_id,),
             ).fetchone()
         return None if row is None else self._process_evidence_from_row(row)
+
+    def reconcile_workflow_completed(
+        self, call_id: str, evidence: dict
+    ) -> ToolCallRecord:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        evidence_id = uuid.uuid4().hex
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            run, call = self._recovery_records(connection, call_id)
+            if (
+                run.workflow != "ml_experiment"
+                or run.status is not RunStatus.RECOVERABLE
+                or call.status is not ToolCallStatus.INTERRUPTED
+                or call.risk_level is not RiskLevel.EXTERNAL_EFFECT
+                or call.step_id is None
+            ):
+                raise ValueError("call is not an interrupted ML external effect")
+            step = connection.execute(
+                "SELECT * FROM steps WHERE id = ?", (call.step_id,)
+            ).fetchone()
+            if step is None or StepStatus(step["status"]) is not StepStatus.RUNNING:
+                raise ValueError("interrupted ML Step must still be running")
+            ensure_tool_call_transition(call.status, ToolCallStatus.SUCCEEDED)
+            ensure_step_transition(StepStatus(step["status"]), StepStatus.SUCCEEDED)
+            ensure_run_transition(run.status, RunStatus.RUNNING)
+            connection.execute(
+                """
+                INSERT INTO reconciliation_evidence (
+                    id, tool_call_id, decision, evidence_json, created_at
+                ) VALUES (?, ?, 'completed', ?, ?)
+                """,
+                (evidence_id, call.id, json.dumps(redact(evidence), sort_keys=True), timestamp),
+            )
+            connection.execute(
+                """
+                UPDATE tool_calls SET status = ?, result_summary = ?, updated_at = ?, ended_at = ?
+                WHERE id = ?
+                """,
+                (
+                    ToolCallStatus.SUCCEEDED.value,
+                    json.dumps({"reconciled": True}, sort_keys=True),
+                    timestamp,
+                    timestamp,
+                    call.id,
+                ),
+            )
+            self._insert_event(
+                connection,
+                run_id=run.id,
+                sequence=self._next_event_sequence(connection, run.id),
+                event_type="tool.reconciled",
+                payload={"decision": "completed", "tool_call_id": call.id},
+                created_at=timestamp,
+            )
+            connection.execute(
+                """
+                UPDATE steps SET status = ?, updated_at = ?, ended_at = ? WHERE id = ?
+                """,
+                (StepStatus.SUCCEEDED.value, timestamp, timestamp, step["id"]),
+            )
+            self._insert_event(
+                connection,
+                run_id=run.id,
+                sequence=self._next_event_sequence(connection, run.id),
+                event_type="step.completed",
+                payload={"step_id": step["id"]},
+                created_at=timestamp,
+            )
+            connection.execute(
+                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                (RunStatus.RUNNING.value, timestamp, run.id),
+            )
+            self._insert_event(
+                connection,
+                run_id=run.id,
+                sequence=self._next_event_sequence(connection, run.id),
+                event_type="run.resumed",
+                payload={"tool_call_id": call.id},
+                created_at=timestamp,
+            )
+            row = connection.execute(
+                "SELECT * FROM tool_calls WHERE id = ?", (call.id,)
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self._tool_call_from_row(row)
+
+    def approve_workflow_retry(
+        self,
+        call_id: str,
+        evidence: dict,
+        *,
+        new_call_id: str | None = None,
+        new_approval_id: str | None = None,
+    ) -> tuple[ToolCallRecord, ApprovalRecord]:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        evidence_id = uuid.uuid4().hex
+        retry_id = new_call_id or uuid.uuid4().hex
+        approval_id = new_approval_id or uuid.uuid4().hex
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            run, call = self._recovery_records(connection, call_id)
+            if (
+                run.workflow != "ml_experiment"
+                or run.status is not RunStatus.RECOVERABLE
+                or call.status is not ToolCallStatus.INTERRUPTED
+                or call.risk_level is not RiskLevel.EXTERNAL_EFFECT
+                or call.step_id is None
+            ):
+                raise ValueError("call is not retryable through ML reconciliation")
+            step = connection.execute(
+                "SELECT * FROM steps WHERE id = ?", (call.step_id,)
+            ).fetchone()
+            if step is None or StepStatus(step["status"]) is not StepStatus.RUNNING:
+                raise ValueError("interrupted ML Step must still be running")
+            if connection.execute(
+                "SELECT 1 FROM tool_calls WHERE retry_of = ?", (call.id,)
+            ).fetchone() is not None:
+                raise ValueError("reconciliation retry already exists")
+            ensure_step_transition(StepStatus(step["status"]), StepStatus.WAITING_APPROVAL)
+            ensure_run_transition(run.status, RunStatus.WAITING_APPROVAL)
+            connection.execute(
+                """
+                INSERT INTO reconciliation_evidence (
+                    id, tool_call_id, decision, evidence_json, created_at
+                ) VALUES (?, ?, 'retry', ?, ?)
+                """,
+                (evidence_id, call.id, json.dumps(redact(evidence), sort_keys=True), timestamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO tool_calls (
+                    id, run_id, retry_of, tool_name, arguments_json, risk_level,
+                    execution_kind, idempotent, idempotency_key, status, attempt,
+                    timeout_seconds, result_summary, created_at, updated_at,
+                    started_at, ended_at, step_id
+                ) SELECT ?, run_id, id, tool_name, arguments_json, risk_level,
+                    execution_kind, idempotent, idempotency_key, ?, attempt + 1,
+                    timeout_seconds, NULL, ?, ?, NULL, NULL, step_id
+                FROM tool_calls WHERE id = ?
+                """,
+                (
+                    retry_id,
+                    ToolCallStatus.WAITING_APPROVAL.value,
+                    timestamp,
+                    timestamp,
+                    call.id,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO approvals (
+                    id, tool_call_id, status, decision, tool_name,
+                    arguments_summary, workspace, risk_reason,
+                    requested_at, resolved_at
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    approval_id,
+                    retry_id,
+                    ApprovalStatus.PENDING.value,
+                    call.tool_name,
+                    summarize_arguments(call.arguments),
+                    run.workspace,
+                    call.risk_level.value,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE steps SET status = ?, attempt_count = attempt_count + 1,
+                    updated_at = ? WHERE id = ?
+                """,
+                (StepStatus.WAITING_APPROVAL.value, timestamp, step["id"]),
+            )
+            connection.execute(
+                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
+                (RunStatus.WAITING_APPROVAL.value, timestamp, run.id),
+            )
+            for event_type, payload in (
+                (
+                    "reconciliation.retry_approved",
+                    {"new_tool_call_id": retry_id, "tool_call_id": call.id},
+                ),
+                (
+                    "tool.created",
+                    {"attempt": call.attempt + 1, "retry_of": call.id, "tool_call_id": retry_id,
+                     "tool_name": call.tool_name},
+                ),
+                (
+                    "approval.requested",
+                    {"approval_id": approval_id, "risk_reason": call.risk_level.value,
+                     "tool_call_id": retry_id, "tool_name": call.tool_name},
+                ),
+            ):
+                self._insert_event(
+                    connection,
+                    run_id=run.id,
+                    sequence=self._next_event_sequence(connection, run.id),
+                    event_type=event_type,
+                    payload=payload,
+                    created_at=timestamp,
+                )
+            retry_row = connection.execute(
+                "SELECT * FROM tool_calls WHERE id = ?", (retry_id,)
+            ).fetchone()
+            approval_row = connection.execute(
+                "SELECT * FROM approvals WHERE id = ?", (approval_id,)
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self._tool_call_from_row(retry_row), self._approval_from_row(approval_row)
+
+    def record_unresolved_reconciliation(
+        self, call_id: str, evidence: dict
+    ) -> ReconciliationEvidenceRecord:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        evidence_id = uuid.uuid4().hex
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            run, call = self._recovery_records(connection, call_id)
+            if (
+                run.workflow != "ml_experiment"
+                or run.status is not RunStatus.RECOVERABLE
+                or call.status is not ToolCallStatus.INTERRUPTED
+            ):
+                raise ValueError("call is not an unresolved ML recovery")
+            safe_evidence = redact(evidence)
+            connection.execute(
+                """
+                INSERT INTO reconciliation_evidence (
+                    id, tool_call_id, decision, evidence_json, created_at
+                ) VALUES (?, ?, 'unresolved', ?, ?)
+                """,
+                (evidence_id, call.id, json.dumps(safe_evidence, sort_keys=True), timestamp),
+            )
+            self._insert_event(
+                connection,
+                run_id=run.id,
+                sequence=self._next_event_sequence(connection, run.id),
+                event_type="reconciliation.unresolved",
+                payload={"reason": safe_evidence.get("reason"), "tool_call_id": call.id},
+                created_at=timestamp,
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return ReconciliationEvidenceRecord(
+            evidence_id, call_id, "unresolved", safe_evidence, timestamp
+        )
+
+    def list_reconciliation_evidence(
+        self, tool_call_id: str
+    ) -> list[ReconciliationEvidenceRecord]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM reconciliation_evidence
+                WHERE tool_call_id = ? ORDER BY created_at, id
+                """,
+                (tool_call_id,),
+            ).fetchall()
+        return [
+            ReconciliationEvidenceRecord(
+                row["id"],
+                row["tool_call_id"],
+                row["decision"],
+                json.loads(row["evidence_json"]),
+                row["created_at"],
+            )
+            for row in rows
+        ]
 
     def list_events(self, run_id: str) -> list[EventRecord]:
         with closing(self._connect()) as connection:

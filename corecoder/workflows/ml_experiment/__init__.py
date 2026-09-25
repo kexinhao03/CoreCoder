@@ -15,6 +15,11 @@ from .models import (
     build_definition,
     resolve_workspace,
 )
+from .reconcile import (
+    MLReconciliationService,
+    ReconciliationDecision,
+    ReconciliationResult,
+)
 from .workflow import MLExperimentWorkflow, WorkflowStatus
 
 __all__ = [
@@ -27,7 +32,10 @@ __all__ = [
     "ArtifactVerifier",
     "EffectEvidence",
     "MLExperimentWorkflow",
+    "MLReconciliationService",
     "NormalizedMetrics",
+    "ReconciliationDecision",
+    "ReconciliationResult",
     "StepDefinition",
     "WorkflowDefinition",
     "WorkflowStatus",

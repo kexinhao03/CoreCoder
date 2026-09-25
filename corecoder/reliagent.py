@@ -179,6 +179,10 @@ class ReliAgentRuntime:
         calls = [
             call for call in self._store.list_tool_calls(run_id) if call.step_id == step_id
         ]
-        if len(calls) != 1:
-            raise ValueError("waiting step must have exactly one persisted tool call")
-        return calls[0]
+        if not calls:
+            raise ValueError("waiting step must have a persisted tool call")
+        latest_attempt = max(call.attempt for call in calls)
+        latest = [call for call in calls if call.attempt == latest_attempt]
+        if len(latest) != 1:
+            raise ValueError("waiting step has ambiguous latest ToolCall attempt")
+        return latest[0]

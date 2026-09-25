@@ -271,23 +271,23 @@ Commit: `feat(workflow): orchestrate approved ML experiment`
 - `SQLiteStore.record_unresolved_reconciliation(call_id, evidence: dict) -> ReconciliationEvidenceRecord` appends audit facts without state change.
 - `MLReconciliationService.reconcile(call_id: str, decision: ReconciliationDecision) -> ReconciliationResult`.
 
-- [ ] **Step 1: Add failing atomic Store tests**
+- [x] **Step 1: Add failing atomic Store tests**
 
 Assert completed accepts only interrupted external-effect calls in recoverable ML Runs, performs `interrupted -> succeeded` only via the dedicated API, marks the linked running Step succeeded, returns Run to running, and writes evidence plus `tool.reconciled`, `step.completed`, `run.resumed` in one transaction. Force an event insert failure and assert every change rolls back. Generic transition APIs must still reject bypasses.
 
-- [ ] **Step 2: Verify RED and implement Store transactions**
+- [x] **Step 2: Verify RED and implement Store transactions**
 
 Run targeted Store tests. Use `BEGIN IMMEDIATE`, stale-state comparisons, one active-attempt invariant, fresh approval ids, and new-attempt `retry_of` lineage.
 
-- [ ] **Step 3: Add failing ArtifactVerifier reconciliation tests**
+- [x] **Step 3: Add failing ArtifactVerifier reconciliation tests**
 
 Cover completed with valid metrics/one marker/confirmed-dead process; reject missing or malformed metrics, temp-only metrics, two markers, wrong ids/hashes, altered definition/workspace, and unconfirmed/live process evidence. `unresolved` preserves Run/Step/ToolCall states. `retry` is allowed only when no valid final metrics and no effect marker, creates a fresh attempt and Approval, and never reuses the old Approval.
 
-- [ ] **Step 4: Implement reconciliation service**
+- [x] **Step 4: Implement reconciliation service**
 
 Read current artifacts only for schema/hash/process-integrity evidence. For completed, persist verified normalized metrics and hashes in reconciliation evidence, then stop; the user must call resume to run extraction. For retry, refuse automatic deletion; require the artifact directory to contain neither final metrics nor matching marker in P0. For unresolved, persist stable reason codes.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run reconciliation and Runtime Store tests.
 
