@@ -38,14 +38,17 @@ class RecoveryManager:
         self.store = store
         self.registry = registry
 
-    def scan(self) -> list[RecoveryCandidate]:
+    def scan(self, run_id: str | None = None) -> list[RecoveryCandidate]:
         terminal_runs = {RunStatus.SUCCEEDED, RunStatus.FAILED}
-        for call in self.store.list_tool_calls(statuses=[ToolCallStatus.RUNNING]):
+        for call in self.store.list_tool_calls(
+            run_id=run_id, statuses=[ToolCallStatus.RUNNING]
+        ):
             if self.store.get_run(call.run_id).status not in terminal_runs:
                 self.store.mark_orphaned_tool_call(call.id)
 
         candidates = []
         for call in self.store.list_tool_calls(
+            run_id=run_id,
             statuses=[ToolCallStatus.INTERRUPTED, ToolCallStatus.WAITING_APPROVAL, ToolCallStatus.CREATED]
         ):
             run = self.store.get_run(call.run_id)

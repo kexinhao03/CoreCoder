@@ -504,6 +504,14 @@ class SQLiteStore:
                 """,
                 (retry_id, ToolCallStatus.CREATED.value, timestamp, timestamp, call.id),
             )
+            if call.step_id is not None:
+                connection.execute(
+                    """
+                    UPDATE steps SET attempt_count = attempt_count + 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (timestamp, call.step_id),
+                )
             self._insert_event(
                 connection, run_id=run.id, sequence=self._next_event_sequence(connection, run.id),
                 event_type="tool.created",

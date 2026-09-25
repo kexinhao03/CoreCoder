@@ -15,6 +15,7 @@ from .models import (
     build_definition,
     resolve_workspace,
 )
+from .workflow import MLExperimentWorkflow, WorkflowStatus
 
 __all__ = [
     "CONFIG_VERSION",
@@ -25,9 +26,11 @@ __all__ = [
     "ArtifactPaths",
     "ArtifactVerifier",
     "EffectEvidence",
+    "MLExperimentWorkflow",
     "NormalizedMetrics",
     "StepDefinition",
     "WorkflowDefinition",
+    "WorkflowStatus",
     "build_definition",
     "resolve_workspace",
 ]

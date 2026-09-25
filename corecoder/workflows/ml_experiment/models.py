@@ -97,12 +97,13 @@ class WorkflowDefinition:
 
     def arguments_for(self, step_key: str) -> tuple[str, ...]:
         step = self.step(step_key)
+        experiment_step = self.step("run_experiment")
         values = {
             "artifact_dir": str(self.artifacts.artifact_dir),
             "database": str(self.artifacts.database),
             "dataset": str(_DATASET_PATH),
             "dataset_sha256": self.dataset_sha256,
-            "definition_hash": step.definition_hash,
+            "definition_hash": experiment_step.definition_hash,
             "effects": str(self.artifacts.effects_file),
             "experiment_id": self.experiment_id,
             "metrics": str(self.artifacts.metrics_file),

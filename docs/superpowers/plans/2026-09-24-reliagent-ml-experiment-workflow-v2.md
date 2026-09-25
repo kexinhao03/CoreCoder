@@ -222,33 +222,33 @@ Commit: `feat(runtime): add durable process-loss checkpoints`
 - `MLExperimentWorkflow.resume(run_id: str) -> WorkflowStatus`.
 - `WorkflowStatus` exposes the stable v2 CLI fields.
 
-- [ ] **Step 1: Add failing task-creation compatibility tests**
+- [x] **Step 1: Add failing task-creation compatibility tests**
 
 Assert old `run_task` facts are unchanged. Assert `create_task` persists four stable ML Step keys/hashes before execution and returns a created Run. Assert step count/key/hash mismatch causes resume to fail before any new ToolCall or Event.
 
-- [ ] **Step 2: Verify RED, implement create_task, verify GREEN**
+- [x] **Step 2: Verify RED, implement create_task, verify GREEN**
 
 Run: `.venv/bin/python -m pytest -q tests/test_reliagent.py`
 
 Implement `run_task` as `create_task` followed by existing pending execution, retaining defaults.
 
-- [ ] **Step 3: Add failing normal-path Workflow tests**
+- [x] **Step 3: Add failing normal-path Workflow tests**
 
 Use real SQLiteStore/RuntimeExecutor and fixture subprocesses. Assert start runs environment check then persists the exact run_experiment ToolCall/Approval and stops. Assert unapproved execution count is zero. Resolve the same approval allow-once, resume, and assert all four Steps succeed, the approved ToolCall id is unchanged, normalized extraction/effect JSON is persisted, and marker count is one. Denial through the Workflow control path must atomically fail ToolCall/Step/Run with `APPROVAL_DENIED` and create no artifacts. When `fault` is selected, `create()` arms the matching persisted FaultPlan immediately after creating the Run and before any Step executes; ordinary Runs create no plan.
 
-- [ ] **Step 4: Implement policies and orchestration**
+- [x] **Step 4: Implement policies and orchestration**
 
 Policies: environment/extract/verify are read-only, idempotent, subprocess, two attempts, startup recovery enabled; experiment is `external_effect`, non-idempotent, one attempt, approval required, no retry. Each argv embeds workflow/experiment/definition/dataset identities and absolute workspace-contained paths. On every resume re-resolve workspace, rebuild definitions, compare Step identities and active call arguments, then use RecoveryManager before pending execution.
 
-- [ ] **Step 5: Add failing recovery simulation tests**
+- [x] **Step 5: Add failing recovery simulation tests**
 
 With the catchable unit injector, leave environment call running, construct a fresh Workflow, resume, and assert source becomes interrupted/failed with a retry child, retry succeeds, and workflow stops at experiment approval without a marker. For an interrupted experiment, assert no retry and no later Step.
 
-- [ ] **Step 6: Implement safe recovery and repeated-resume idempotency**
+- [x] **Step 6: Implement safe recovery and repeated-resume idempotency**
 
 Only `RecoveryKind.RETRY_ALLOWED` is automatically executed. `HUMAN_REQUIRED` returns `pending_reconciliation_tool_call_id`. A succeeded Run returns without Store writes. Compare Events/ToolCalls/artifact bytes around two successful resumes.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 Run all `tests/workflows/test_ml_experiment_workflow.py`, recovery tests, and `tests/test_reliagent.py`.
 
