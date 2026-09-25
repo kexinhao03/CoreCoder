@@ -56,6 +56,43 @@ class StepRecord:
     updated_at: str
     started_at: str | None
     ended_at: str | None
+    step_key: str | None = None
+    definition_version: str | None = None
+    definition_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class FaultPlanRecord:
+    id: str
+    run_id: str
+    fault_type: str
+    target_step_key: str
+    checkpoint: str
+    exit_code: int
+    state: str
+    created_at: str
+    triggered_at: str | None
+
+
+@dataclass(frozen=True)
+class ProcessEvidenceRecord:
+    tool_call_id: str
+    pid: int
+    pgid: int | None
+    process_token: str
+    argv_sha256: str
+    started_at: str
+    ended_at: str
+    termination_confirmed: bool
+
+
+@dataclass(frozen=True)
+class ReconciliationEvidenceRecord:
+    id: str
+    tool_call_id: str
+    decision: str
+    evidence: dict
+    created_at: str
 
 
 @dataclass(frozen=True)

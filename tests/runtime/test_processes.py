@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -61,6 +63,21 @@ def test_process_runner_captures_success(tmp_path):
     assert result.duration_seconds >= 0
     assert result.failure_kind is None
     assert result.termination_confirmed is True
+    assert result.process_evidence is not None
+    assert result.process_evidence.pid > 0
+    if os.name == "posix":
+        assert result.process_evidence.pgid == result.process_evidence.pid
+    assert len(result.process_evidence.process_token) == 32
+    expected_argv_sha256 = hashlib.sha256(
+        json.dumps(
+            [sys.executable, "-c", "print('hello')"],
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    assert result.process_evidence.argv_sha256 == expected_argv_sha256
+    assert result.process_evidence.started_at.endswith("+00:00")
+    assert result.process_evidence.ended_at.endswith("+00:00")
+    assert result.process_evidence.termination_confirmed is True
 
 
 def test_process_runner_classifies_nonzero_exit(tmp_path):

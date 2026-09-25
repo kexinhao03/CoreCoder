@@ -63,6 +63,72 @@ def test_initialize_creates_runtime_tables(tmp_path):
     assert {"runs", "tool_calls", "approvals", "events"} <= names
 
 
+def test_initialize_migrates_legacy_steps_without_inventing_identity(tmp_path):
+    database = tmp_path / "legacy.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY, goal TEXT NOT NULL, workflow TEXT NOT NULL,
+                status TEXT NOT NULL, workspace TEXT NOT NULL, model TEXT NOT NULL,
+                prompt_version TEXT NOT NULL, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, started_at TEXT, ended_at TEXT
+            );
+            CREATE TABLE steps (
+                id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id),
+                sequence INTEGER NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, started_at TEXT, ended_at TEXT,
+                UNIQUE (run_id, sequence)
+            );
+            INSERT INTO runs VALUES (
+                'legacy-run', 'goal', 'fixed_task', 'created', '/tmp', 'model',
+                'v1', '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00', NULL, NULL
+            );
+            INSERT INTO steps VALUES (
+                'legacy-step', 'legacy-run', 1, 'legacy', 'pending', 0,
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00', NULL, NULL
+            );
+            """
+        )
+
+    store = SQLiteStore(database)
+    store.initialize()
+
+    [step] = store.list_steps("legacy-run")
+    assert step.step_key is None
+    assert step.definition_version is None
+    assert step.definition_hash is None
+
+
+def test_versioned_step_identity_is_durable_and_unique(store_with_run):
+    step = store_with_run.create_step(
+        "run-1",
+        sequence=1,
+        title="Run experiment",
+        step_key="run_experiment",
+        definition_version="1",
+        definition_hash="a" * 64,
+        step_id="step-1",
+    )
+
+    assert step.step_key == "run_experiment"
+    assert step.definition_version == "1"
+    assert step.definition_hash == "a" * 64
+    assert store_with_run.list_steps("run-1") == [step]
+    with pytest.raises(ValueError, match="step key already exists"):
+        store_with_run.create_step(
+            "run-1",
+            sequence=2,
+            title="Duplicate",
+            step_key="run_experiment",
+            definition_version="1",
+            definition_hash="a" * 64,
+        )
+
+
 @pytest.mark.parametrize("status", [ToolCallStatus.CREATED, ToolCallStatus.WAITING_APPROVAL,
                                    ToolCallStatus.RUNNING, ToolCallStatus.SUCCEEDED])
 def test_cancel_run_settles_only_unstarted_calls_atomically(store_with_run, status):

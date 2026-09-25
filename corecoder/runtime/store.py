@@ -11,8 +11,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
-from .models import EventRecord, RunRecord, StepRecord, ToolCallRecord
+from .models import (
+    EventRecord,
+    FaultPlanRecord,
+    ProcessEvidenceRecord,
+    RunRecord,
+    StepRecord,
+    ToolCallRecord,
+)
 from .policies import FailureKind, ToolPolicyRegistry
+from .processes import ProcessEvidence
 from .redaction import redact
 from .state import (
     ExecutionKind,
@@ -122,6 +130,38 @@ class SQLiteStore:
                     UNIQUE (run_id, sequence)
                 );
 
+                CREATE TABLE IF NOT EXISTS fault_plans (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(id),
+                    fault_type TEXT NOT NULL,
+                    target_step_key TEXT NOT NULL,
+                    checkpoint TEXT NOT NULL,
+                    exit_code INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    triggered_at TEXT,
+                    UNIQUE (run_id, target_step_key, checkpoint)
+                );
+
+                CREATE TABLE IF NOT EXISTS process_evidence (
+                    tool_call_id TEXT PRIMARY KEY REFERENCES tool_calls(id),
+                    pid INTEGER NOT NULL,
+                    pgid INTEGER,
+                    process_token TEXT NOT NULL,
+                    argv_sha256 TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    termination_confirmed INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS reconciliation_evidence (
+                    id TEXT PRIMARY KEY,
+                    tool_call_id TEXT NOT NULL REFERENCES tool_calls(id),
+                    decision TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id
                     ON tool_calls(run_id);
                 CREATE INDEX IF NOT EXISTS idx_steps_run_id ON steps(run_id);
@@ -147,6 +187,22 @@ class SQLiteStore:
             }
             if "step_id" not in tool_call_columns:
                 connection.execute("ALTER TABLE tool_calls ADD COLUMN step_id TEXT")
+            step_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(steps)")
+            }
+            if "step_key" not in step_columns:
+                connection.execute("ALTER TABLE steps ADD COLUMN step_key TEXT")
+            if "definition_version" not in step_columns:
+                connection.execute("ALTER TABLE steps ADD COLUMN definition_version TEXT")
+            if "definition_hash" not in step_columns:
+                connection.execute("ALTER TABLE steps ADD COLUMN definition_hash TEXT")
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_steps_run_step_key
+                ON steps(run_id, step_key) WHERE step_key IS NOT NULL
+                """
+            )
 
     def create_run(
         self,
@@ -973,7 +1029,22 @@ class SQLiteStore:
             ).fetchall()
         return [self._step_from_row(row) for row in rows]
 
-    def create_step(self, run_id: str, *, sequence: int | None, title: str, step_id: str | None = None) -> StepRecord:
+    def create_step(
+        self,
+        run_id: str,
+        *,
+        sequence: int | None,
+        title: str,
+        step_id: str | None = None,
+        step_key: str | None = None,
+        definition_version: str | None = None,
+        definition_hash: str | None = None,
+    ) -> StepRecord:
+        identity = (step_key, definition_version, definition_hash)
+        if any(value is not None for value in identity) and any(
+            value is None for value in identity
+        ):
+            raise ValueError("versioned step identity must be complete")
         timestamp = datetime.now(timezone.utc).isoformat()
         connection = self._connect()
         try:
@@ -985,17 +1056,73 @@ class SQLiteStore:
                     "SELECT COALESCE(MAX(sequence), 0) + 1 FROM steps WHERE run_id = ?",
                     (run_id,),
                 ).fetchone()[0]
-            step = StepRecord(step_id or uuid.uuid4().hex, run_id, sequence, title, StepStatus.PENDING, 0, timestamp, timestamp, None, None)
+            step = StepRecord(
+                step_id or uuid.uuid4().hex,
+                run_id,
+                sequence,
+                title,
+                StepStatus.PENDING,
+                0,
+                timestamp,
+                timestamp,
+                None,
+                None,
+                step_key,
+                definition_version,
+                definition_hash,
+            )
             try:
-                connection.execute("INSERT INTO steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
-                    step.id, step.run_id, step.sequence, step.title, step.status.value, step.attempt_count,
-                    step.created_at, step.updated_at, step.started_at, step.ended_at,
-                ))
+                connection.execute(
+                    """
+                    INSERT INTO steps (
+                        id, run_id, sequence, title, status, attempt_count,
+                        created_at, updated_at, started_at, ended_at,
+                        step_key, definition_version, definition_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        step.id,
+                        step.run_id,
+                        step.sequence,
+                        step.title,
+                        step.status.value,
+                        step.attempt_count,
+                        step.created_at,
+                        step.updated_at,
+                        step.started_at,
+                        step.ended_at,
+                        step.step_key,
+                        step.definition_version,
+                        step.definition_hash,
+                    ),
+                )
             except sqlite3.IntegrityError as error:
                 if "steps.run_id, steps.sequence" in str(error):
                     raise ValueError("step sequence already exists") from error
+                if "steps.run_id, steps.step_key" in str(error):
+                    raise ValueError("step key already exists") from error
                 raise
-            self._insert_event(connection, run_id=run_id, sequence=self._next_event_sequence(connection, run_id), event_type="step.created", payload={"step_id": step.id, "sequence": sequence, "title": title}, created_at=timestamp)
+            event_payload = {
+                "sequence": sequence,
+                "step_id": step.id,
+                "title": title,
+            }
+            if step_key is not None:
+                event_payload.update(
+                    {
+                        "definition_hash": definition_hash,
+                        "definition_version": definition_version,
+                        "step_key": step_key,
+                    }
+                )
+            self._insert_event(
+                connection,
+                run_id=run_id,
+                sequence=self._next_event_sequence(connection, run_id),
+                event_type="step.created",
+                payload=event_payload,
+                created_at=timestamp,
+            )
             connection.commit()
         except Exception:
             connection.rollback()
@@ -1263,6 +1390,176 @@ class SQLiteStore:
             created_at=row["created_at"],
         )
 
+    def create_fault_plan(
+        self,
+        *,
+        run_id: str,
+        fault_type: str,
+        target_step_key: str,
+        checkpoint: str,
+        exit_code: int,
+        fault_plan_id: str | None = None,
+    ) -> FaultPlanRecord:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        plan_id = fault_plan_id or uuid.uuid4().hex
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM runs WHERE id = ?", (run_id,)
+            ).fetchone() is None:
+                raise KeyError(f"run not found: {run_id}")
+            connection.execute(
+                """
+                INSERT INTO fault_plans (
+                    id, run_id, fault_type, target_step_key, checkpoint,
+                    exit_code, state, created_at, triggered_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'armed', ?, NULL)
+                """,
+                (
+                    plan_id,
+                    run_id,
+                    fault_type,
+                    target_step_key,
+                    checkpoint,
+                    exit_code,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM fault_plans WHERE id = ?", (plan_id,)
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self._fault_plan_from_row(row)
+
+    def list_fault_plans(self, run_id: str) -> list[FaultPlanRecord]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM fault_plans
+                WHERE run_id = ? ORDER BY created_at, id
+                """,
+                (run_id,),
+            ).fetchall()
+        return [self._fault_plan_from_row(row) for row in rows]
+
+    def trigger_fault_plan(
+        self, run_id: str, step_key: str, checkpoint: str
+    ) -> FaultPlanRecord | None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT * FROM fault_plans
+                WHERE run_id = ? AND target_step_key = ? AND checkpoint = ?
+                    AND state = 'armed'
+                """,
+                (run_id, step_key, checkpoint),
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            connection.execute(
+                """
+                UPDATE fault_plans
+                SET state = 'triggered', triggered_at = ?
+                WHERE id = ? AND state = 'armed'
+                """,
+                (timestamp, row["id"]),
+            )
+            self._insert_event(
+                connection,
+                run_id=run_id,
+                sequence=self._next_event_sequence(connection, run_id),
+                event_type="fault.injected",
+                payload={
+                    "checkpoint": checkpoint,
+                    "exit_code": row["exit_code"],
+                    "fault_plan_id": row["id"],
+                    "fault_type": row["fault_type"],
+                    "step_key": step_key,
+                },
+                created_at=timestamp,
+            )
+            updated = connection.execute(
+                "SELECT * FROM fault_plans WHERE id = ?", (row["id"],)
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self._fault_plan_from_row(updated)
+
+    def record_process_evidence(
+        self, tool_call_id: str, evidence: ProcessEvidence
+    ) -> ProcessEvidenceRecord:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM process_evidence WHERE tool_call_id = ?",
+                (tool_call_id,),
+            ).fetchone()
+            if row is not None:
+                existing = self._process_evidence_from_row(row)
+                candidate = ProcessEvidenceRecord(tool_call_id, **vars(evidence))
+                if existing != candidate:
+                    raise ValueError("conflicting process evidence")
+                connection.commit()
+                return existing
+            if connection.execute(
+                "SELECT 1 FROM tool_calls WHERE id = ?", (tool_call_id,)
+            ).fetchone() is None:
+                raise KeyError(f"tool call not found: {tool_call_id}")
+            connection.execute(
+                """
+                INSERT INTO process_evidence (
+                    tool_call_id, pid, pgid, process_token, argv_sha256,
+                    started_at, ended_at, termination_confirmed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tool_call_id,
+                    evidence.pid,
+                    evidence.pgid,
+                    evidence.process_token,
+                    evidence.argv_sha256,
+                    evidence.started_at,
+                    evidence.ended_at,
+                    int(evidence.termination_confirmed),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM process_evidence WHERE tool_call_id = ?",
+                (tool_call_id,),
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self._process_evidence_from_row(row)
+
+    def get_process_evidence(
+        self, tool_call_id: str
+    ) -> ProcessEvidenceRecord | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM process_evidence WHERE tool_call_id = ?",
+                (tool_call_id,),
+            ).fetchone()
+        return None if row is None else self._process_evidence_from_row(row)
+
     def list_events(self, run_id: str) -> list[EventRecord]:
         with closing(self._connect()) as connection:
             rows = connection.execute(
@@ -1336,6 +1633,33 @@ class SQLiteStore:
         )
 
     @staticmethod
+    def _fault_plan_from_row(row: sqlite3.Row) -> FaultPlanRecord:
+        return FaultPlanRecord(
+            id=row["id"],
+            run_id=row["run_id"],
+            fault_type=row["fault_type"],
+            target_step_key=row["target_step_key"],
+            checkpoint=row["checkpoint"],
+            exit_code=row["exit_code"],
+            state=row["state"],
+            created_at=row["created_at"],
+            triggered_at=row["triggered_at"],
+        )
+
+    @staticmethod
+    def _process_evidence_from_row(row: sqlite3.Row) -> ProcessEvidenceRecord:
+        return ProcessEvidenceRecord(
+            tool_call_id=row["tool_call_id"],
+            pid=row["pid"],
+            pgid=row["pgid"],
+            process_token=row["process_token"],
+            argv_sha256=row["argv_sha256"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            termination_confirmed=bool(row["termination_confirmed"]),
+        )
+
+    @staticmethod
     def _tool_call_from_row(row: sqlite3.Row) -> ToolCallRecord:
         return ToolCallRecord(
             id=row["id"],
@@ -1360,4 +1684,18 @@ class SQLiteStore:
 
     @staticmethod
     def _step_from_row(row: sqlite3.Row) -> StepRecord:
-        return StepRecord(row["id"], row["run_id"], row["sequence"], row["title"], StepStatus(row["status"]), row["attempt_count"], row["created_at"], row["updated_at"], row["started_at"], row["ended_at"])
+        return StepRecord(
+            row["id"],
+            row["run_id"],
+            row["sequence"],
+            row["title"],
+            StepStatus(row["status"]),
+            row["attempt_count"],
+            row["created_at"],
+            row["updated_at"],
+            row["started_at"],
+            row["ended_at"],
+            row["step_key"],
+            row["definition_version"],
+            row["definition_hash"],
+        )

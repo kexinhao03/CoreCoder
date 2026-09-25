@@ -120,17 +120,17 @@ Commit: `feat(workflow): add deterministic ML fixture`
 - Add `SQLiteStore.create_fault_plan`, `trigger_fault_plan`, `record_process_evidence`, and read methods.
 - `ProcessResult` gains optional `process_evidence: ProcessEvidence | None = None`.
 
-- [ ] **Step 1: Add failing Store migration and identity tests**
+- [x] **Step 1: Add failing Store migration and identity tests**
 
 Tests initialize both a fresh database and a legacy schema, create generic legacy Steps with null identity, create ML Steps with exact identity, enforce unique `(run_id, step_key)`, arm/trigger one fault exactly once, persist `fault.injected`, and round-trip process PID/PGID/token/argv digest/start/end/termination confirmation.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `.venv/bin/python -m pytest -q tests/runtime/test_store.py tests/runtime/test_processes.py tests/runtime/test_faults.py`
 
 Expected: failures report missing models, columns, tables, and methods.
 
-- [ ] **Step 3: Add backward-compatible schema and records**
+- [x] **Step 3: Add backward-compatible schema and records**
 
 Add nullable Step columns through `PRAGMA table_info` migration. Add tables:
 
@@ -155,15 +155,15 @@ CREATE TABLE reconciliation_evidence (
 
 Do not alter old records' semantics; null Step identity remains valid outside versioned workflows.
 
-- [ ] **Step 4: Implement atomic fault trigger and process evidence**
+- [x] **Step 4: Implement atomic fault trigger and process evidence**
 
 `trigger_fault_plan(run_id, step_key, checkpoint)` must use `BEGIN IMMEDIATE`, change only `armed -> triggered`, persist `triggered_at`, append `fault.injected`, and return the record; a second call returns `None` without an Event. `record_process_evidence` must reject a different second observation for the same ToolCall.
 
-- [ ] **Step 5: Extend ManagedProcessRunner evidence**
+- [x] **Step 5: Extend ManagedProcessRunner evidence**
 
 Generate a UUID process token before `Popen`; return PID, POSIX PGID, argv SHA-256, timezone-aware start/end timestamps, and the existing termination confirmation. Preserve the six existing positional ProcessResult fields by putting the new field last with a default.
 
-- [ ] **Step 6: Verify GREEN and commit**
+- [x] **Step 6: Verify GREEN and commit**
 
 Run the focused Runtime tests plus `.venv/bin/python -m pytest -q tests/runtime`.
 

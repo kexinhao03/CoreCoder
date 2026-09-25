@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import signal
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from corecoder.runtime.policies import FailureKind
@@ -44,6 +48,18 @@ class ProcessResult:
     duration_seconds: float
     failure_kind: FailureKind | None
     termination_confirmed: bool
+    process_evidence: ProcessEvidence | None = None
+
+
+@dataclass(frozen=True)
+class ProcessEvidence:
+    pid: int
+    pgid: int | None
+    process_token: str
+    argv_sha256: str
+    started_at: str
+    ended_at: str
+    termination_confirmed: bool
 
 
 class ManagedProcessRunner:
@@ -71,11 +87,18 @@ class ManagedProcessRunner:
         else:
             platform_options = {"start_new_session": True}
 
+        process_token = uuid.uuid4().hex
+        process_started_at = datetime.now(timezone.utc).isoformat()
+        argv_sha256 = hashlib.sha256(
+            json.dumps(spec.argv, separators=(",", ":")).encode()
+        ).hexdigest()
+        environment = dict(os.environ if spec.environment is None else spec.environment)
+        environment["RELIAGENT_PROCESS_TOKEN"] = process_token
         try:
             process = subprocess.Popen(
                 spec.argv,
                 cwd=spec.cwd,
-                env=spec.environment,
+                env=environment,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
@@ -90,6 +113,13 @@ class ManagedProcessRunner:
                 failure_kind=FailureKind.SPAWN_ERROR,
                 termination_confirmed=True,
             )
+
+        pgid = None
+        if os.name == "posix":
+            try:
+                pgid = os.getpgid(process.pid)
+            except OSError:
+                pass
 
         failure_kind = None
         termination_confirmed = True
@@ -135,6 +165,7 @@ class ManagedProcessRunner:
 
         if failure_kind is None and process.returncode != 0:
             failure_kind = FailureKind.NONZERO_EXIT
+        process_ended_at = datetime.now(timezone.utc).isoformat()
         return ProcessResult(
             exit_code=process.returncode if termination_confirmed else None,
             stdout=_bound_output(
@@ -148,6 +179,15 @@ class ManagedProcessRunner:
             duration_seconds=monotonic() - started_at,
             failure_kind=failure_kind,
             termination_confirmed=termination_confirmed,
+            process_evidence=ProcessEvidence(
+                pid=process.pid,
+                pgid=pgid,
+                process_token=process_token,
+                argv_sha256=argv_sha256,
+                started_at=process_started_at,
+                ended_at=process_ended_at,
+                termination_confirmed=termination_confirmed,
+            ),
         )
 
 

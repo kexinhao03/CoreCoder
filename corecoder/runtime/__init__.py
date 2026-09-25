@@ -2,10 +2,19 @@
 
 from .approvals import ApprovalDecision, ApprovalRecord, ApprovalStatus
 from .executor import ExecutionRefused, PendingApproval, RuntimeExecutor, RuntimeResult
+from .faults import FaultCheckpoint, FaultPlanState
 from .metrics import Availability, MetricsService, RunMetrics
-from .models import EventRecord, RunRecord, StepRecord, ToolCallRecord
+from .models import (
+    EventRecord,
+    FaultPlanRecord,
+    ProcessEvidenceRecord,
+    ReconciliationEvidenceRecord,
+    RunRecord,
+    StepRecord,
+    ToolCallRecord,
+)
 from .policies import FailureKind, ToolPolicy, ToolPolicyRegistry
-from .processes import ManagedProcessRunner, ProcessResult, ProcessSpec
+from .processes import ManagedProcessRunner, ProcessEvidence, ProcessResult, ProcessSpec
 from .recovery import RecoveryCandidate, RecoveryKind, RecoveryManager, RecoveryResolution
 from .redaction import redact, redact_text
 from .state import (
@@ -29,12 +38,18 @@ __all__ = [
     "ExecutionKind",
     "ExecutionRefused",
     "FailureKind",
+    "FaultCheckpoint",
+    "FaultPlanRecord",
+    "FaultPlanState",
     "InvalidTransition",
     "ManagedProcessRunner",
     "MetricsService",
     "PendingApproval",
+    "ProcessEvidence",
+    "ProcessEvidenceRecord",
     "ProcessResult",
     "ProcessSpec",
+    "ReconciliationEvidenceRecord",
     "RecoveryCandidate",
     "RecoveryKind",
     "RecoveryManager",
