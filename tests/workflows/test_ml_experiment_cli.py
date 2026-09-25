@@ -138,3 +138,20 @@ def test_ml_cli_real_after_effect_exit_requires_reconcile(tmp_path, capsys):
     ]) == 0
     [reconciled] = _lines(capsys)
     assert reconciled["decision"] == "completed"
+
+
+def test_ml_cli_evaluation_writes_twenty_four_real_results(tmp_path, capsys):
+    output = tmp_path / "evaluation"
+
+    assert main(["eval", "ml_workflow", "--output", str(output)]) == 0
+
+    [result] = _lines(capsys)
+    assert result["total_repetitions"] == 24
+    assert result["contract_passed_repetitions"] == 24
+    raw = json.loads(Path(result["raw_json"]).read_text())
+    assert len(raw["results"]) == 24
+    assert {item["config_id"] for item in raw["results"]} == {
+        "baseline",
+        "full",
+        "no_recovery",
+    }

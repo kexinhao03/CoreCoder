@@ -1,4 +1,4 @@
-"""Deterministic scenarios that exercise production RuntimeExecutor paths."""
+"""Phase 3 scenarios that exercise production RuntimeExecutor paths."""
 
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ from corecoder.runtime import (
 )
 from corecoder.runtime.processes import ProcessResult, ProcessSpec
 
-from .faults import EffectMarker, FaultInjected, FaultInjector
-from .models import EvaluationCase, EvaluationConfig, RuntimeExecution
+from ..faults import EffectMarker, FaultInjected, FaultInjector
+from ..models import EvaluationCase, EvaluationConfig, RuntimeExecution
 
 
 def _read_policy(config: EvaluationConfig, *, timeout: float = 2) -> ToolPolicy:

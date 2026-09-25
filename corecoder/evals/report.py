@@ -11,12 +11,20 @@ _EFFECT_SCENARIOS = {
     "effect_persist_failure",
     "high_risk_interrupted",
     "repeated_resume",
+    "ml_experiment_after_effect",
+    "ml_valid_reconciliation",
+    "ml_damaged_reconciliation",
+    "ml_repeated_resume",
 }
 _RECOVERY_SCENARIOS = {
     "crash_after_step",
     "effect_persist_failure",
     "high_risk_interrupted",
     "repeated_resume",
+    "ml_environment_recovery",
+    "ml_experiment_after_effect",
+    "ml_valid_reconciliation",
+    "ml_damaged_reconciliation",
 }
 
 

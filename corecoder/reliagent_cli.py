@@ -13,6 +13,10 @@ from tempfile import TemporaryDirectory
 
 from .evals.report import write_markdown, write_raw_result
 from .evals.runner import EvaluationRunner
+from .evals.suites.ml_workflow import (
+    ml_workflow_configurations,
+    ml_workflow_suite,
+)
 from .evals.suites.phase3 import phase3_configurations, phase3_suite
 from .reliagent import ReliAgentRuntime, TaskStep
 from .runtime import (
@@ -160,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _add_storage_arguments(trace)
     trace.add_argument("--format", choices=("json",), default="json")
     evaluation = subparsers.add_parser("eval")
-    evaluation.add_argument("suite", choices=("phase3",))
+    evaluation.add_argument("suite", choices=("phase3", "ml_workflow"))
     evaluation.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "workflow":
@@ -198,10 +202,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(TraceService(store).export_run(args.run_id), sort_keys=True))
         return 0
     if args.command == "eval":
+        configurations, suite = (
+            (phase3_configurations(), phase3_suite())
+            if args.suite == "phase3"
+            else (ml_workflow_configurations(), ml_workflow_suite())
+        )
         with TemporaryDirectory() as directory:
             results = EvaluationRunner(
-                Path(directory), phase3_configurations()
-            ).run(phase3_suite())
+                Path(directory), configurations
+            ).run(suite)
         raw_path = write_raw_result(results, args.output)
         markdown_path = write_markdown(raw_path, args.output)
         passed = sum(result.passed is True for result in results)

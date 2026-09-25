@@ -351,23 +351,23 @@ Commit: `feat(cli): expose ML workflow recovery controls`
 - Add `ml_workflow_suite()` with eight fixed cases and Baseline/Full/No-recovery configurations sharing one input/fault definition per case.
 - Adapter returns normal `RuntimeExecution` evidence and calls only public Workflow APIs.
 
-- [ ] **Step 1: Mechanically convert scenarios module to a package**
+- [x] **Step 1: Mechanically convert scenarios module to a package**
 
 Move current implementation without behavior changes, re-export `execute_scenario`, and run all existing Eval tests before adding ML behavior.
 
-- [ ] **Step 2: Add failing Adapter API test**
+- [x] **Step 2: Add failing Adapter API test**
 
 Monkeypatch only public Workflow methods to raise a sentinel and assert the Adapter reaches them; do not assert mock call counts as success evidence. A real integration test must produce Store/Trace/Metrics/artifact evidence through the Workflow.
 
-- [ ] **Step 3: Add the eight failing scenario tests**
+- [x] **Step 3: Add the eight failing scenario tests**
 
 Cases: normal approval success; environment exit/recovery; experiment after-effect exit; valid completed reconciliation without replay; damaged artifact reconciliation refusal; repeated resume; approval denial; report refusal after artifact tampering. Every Scenario invokes RuntimeExecutor through Workflow. Assertions include marker count, retry lineage, recovery status, auto-retry zero for experiment, report integrity, and same input id across configurations.
 
-- [ ] **Step 4: Implement Baseline/Full/No-recovery semantics**
+- [x] **Step 4: Implement Baseline/Full/No-recovery semantics**
 
 Baseline executes the same fixture/definition/assertions with no persisted recovery after a fault. Full enables RecoveryManager and reconciliation. No-recovery persists Store/approval/Trace but does not schedule safe recovery. Do not alter fixture, workflow definitions, fault boundary, or success assertions between configs.
 
-- [ ] **Step 5: Expose `reliagent eval ml_workflow` and verify**
+- [x] **Step 5: Expose `reliagent eval ml_workflow` and verify**
 
 Generate versioned raw JSON/Markdown using existing report functions while retaining Phase 3 output. Run all Eval tests and both CLI eval commands.
 
