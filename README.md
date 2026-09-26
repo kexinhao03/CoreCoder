@@ -38,7 +38,7 @@ I've always felt coding agents get talked about as if they were arcane. Strip a 
 
 The engine (loop, model interface, context, tools, sessions) is 1,171 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole committed package is 63 files: 9,720 physical lines, 8,666 net. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime and ML workflow, each documented below.
 
-And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. 465 tests pass by default; one live-model integration test is opt-in. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. 467 tests pass by default; one live-model integration test is opt-in. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -269,6 +269,18 @@ Each configured server starts as a subprocess at launch, handshakes, and lists i
 
 The ML experiment is a non-coding product path over the same RuntimeExecutor. It validates a fixed local dataset, pauses before the external-effect experiment, runs deterministic ordinary least squares, extracts persisted JSON metrics, verifies one effect marker, and writes Raw JSON plus Markdown reports. It uses no network service or extra dependency.
 
+For a portfolio-oriented walkthrough, use the [3–5 minute demo](docs/reliagent/demo.md):
+
+```bash
+sh scripts/reliagent_ml_demo.sh
+```
+
+The [architecture and state machines](docs/reliagent/architecture.md),
+[resume-claim mapping](docs/reliagent/resume-evidence.md), and checked-in
+[Raw JSON plus Markdown evidence](evidence/reliagent/c724f8a/) all reference the
+fixed evaluated Runtime commit `c724f8a4bc45c8ad900040f46fd306d78039279a`.
+The manifest contains SHA-256 digests for every generated report.
+
 ```mermaid
 flowchart LR
     A[CoreCoder Agent] --> TA[RuntimeToolAdapter]
@@ -348,7 +360,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (456 passing tests plus one opt-in live-model test), `ruff check`, and `compileall`, and make sure they're green. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q`, `ruff check .`, and `python -m compileall -q corecoder tests`, and make sure they're green. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 

@@ -38,7 +38,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1171 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 63 个文件、物理 9720 行、净 8666 行。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
 
-它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；默认有 465 个测试通过，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；默认有 467 个测试通过，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -268,6 +268,16 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 机器学习实验是建立在同一个 RuntimeExecutor 上的非 Coding 路径：检查固定本地数据集，在外部效果实验前等待审批，执行确定性普通最小二乘，提取持久化 JSON 指标，验证唯一 Effect Marker，再生成 Raw JSON 和 Markdown 报告。全过程不使用网络服务，也不增加依赖。
 
+求职展示可以直接运行这份 [3—5 分钟 Demo](docs/reliagent/demo.md)：
+
+```bash
+sh scripts/reliagent_ml_demo.sh
+```
+
+[架构图与状态机](docs/reliagent/architecture.md)、[简历表述证据映射](docs/reliagent/resume-evidence.md)，以及仓库内的
+[Raw JSON 与 Markdown 证据包](evidence/reliagent/c724f8a/) 都固定指向被评测的 Runtime Commit
+`c724f8a4bc45c8ad900040f46fd306d78039279a`。Manifest 保存了每个生成报告的 SHA-256。
+
 ```mermaid
 flowchart LR
     A[CoreCoder Agent] --> TA[RuntimeToolAdapter]
@@ -348,7 +358,7 @@ reliagent eval ml_workflow --output /tmp/reliagent-ml-eval
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（默认 456 个测试通过，另有一个真实模型测试需显式启用）、`ruff check` 和 `compileall`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`、`ruff check .` 和 `python -m compileall -q corecoder tests`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 

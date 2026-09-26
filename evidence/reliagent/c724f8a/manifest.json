@@ -1,0 +1,14 @@
+{
+  "evaluated_commit": "c724f8a4bc45c8ad900040f46fd306d78039279a",
+  "generated_with": [
+    "python -m corecoder.reliagent_cli eval ml_workflow --output <output-dir>",
+    "python -m corecoder.reliagent_cli eval phase3 --output <output-dir>"
+  ],
+  "schema_version": "reliagent.evidence.v1",
+  "sha256": {
+    "ml-workflow-report.md": "f4160aad65a8ff7e6a7788251c8e36bea97025cd3ac8277c0d7366cdce62caa7",
+    "ml-workflow-results.json": "4ec8a539db18509f8d5ada5c0a7456fe19945aeb616b99df04aa3f5364f6d23e",
+    "phase3-report.md": "fd54b4ec50c78c268f09519cb23ddce2a0a620edec4035eb10a9a014202e7be8",
+    "phase3-results.json": "29f5b802085b7ad9d396f89231cb20881b399348bff8294cbdf98604a04ed68d"
+  }
+}
