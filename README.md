@@ -2,7 +2,7 @@
 
 # CoreCoder
 
-**The nanoGPT of coding agents. A 1.2k-line engine inside 5,759 readable lines of pure Python: understand how a coding agent actually works, then fork your own.**
+**The nanoGPT of coding agents. A 1.2k-line engine inside 8,307 readable lines of pure Python: understand how a coding agent actually works, then fork your own.**
 
 *learn from it · fork it · ship something better*
 
@@ -25,7 +25,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| Lines of code | ~1,171 engine / 5,759 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
+| Lines of code | ~1,171 engine / 8,307 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
 | Time to read it all | one afternoon | can't (closed) | a few days of slogging | one afternoon |
 | Breakpoint, change, rerun? | yes, every line | no | yes, but there's a lot | yes |
 | What it's for | understand one, then fork your own | production coding assistant | terminal pair-programming | minimal GPT for teaching |
@@ -36,9 +36,9 @@ The nanoGPT column is there as a reference point: minimal, readable, but it teac
 
 I've always felt coding agents get talked about as if they were arcane. Strip a tool like Claude Code or Cursor all the way down and the core is a `while` loop wrapped around a large model, plus seven or eight tools that let it actually do things. The hard part was never the loop; it's everything the loop has to cope with once it meets the real world. CoreCoder is the minimal version that writes that core out honestly.
 
-The engine (loop, model interface, context, tools, sessions) is 1,171 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole committed package is 47 files: 6,610 physical lines, 5,759 net. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime foundation, each documented below.
+The engine (loop, model interface, context, tools, sessions) is 1,171 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole committed package is 63 files: 9,355 physical lines, 8,307 net. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime and ML workflow, each documented below.
 
-And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. 417 tests pass by default; one live-model integration test is opt-in. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. 456 tests pass by default; one live-model integration test is opt-in. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -263,9 +263,52 @@ Drop a `mcp.json` under `~/.corecoder` and tools from any MCP server join the ag
 
 Each configured server starts as a subprocess at launch, handshakes, and lists its tools; every one is registered as `mcp__<server>__<tool>`, so hook matchers and the consent gate treat it exactly like a built-in. MCP tools stay out of the read-only set, meaning the agent asks before running one. The handshake gets fifteen seconds, a call gets sixty, and a server that dies or never answers fails that one call as an ordinary tool result instead of killing the loop. The client speaks the tools slice of the protocol (initialize, tools/list, tools/call) and nothing else, which keeps the whole thing inside `mcp.py` at about 200 lines. With no `mcp.json` there is no MCP and nothing changes.
 
-## ReliAgent execution and recovery foundation
+## ReliAgent runtime and deterministic ML workflow
 
 `corecoder.runtime` exposes the durable Run, ToolCall, Event, and SQLiteStore API alongside approval records, policies, `ManagedProcessRunner`, `RuntimeExecutor`, and `RecoveryManager`. The Agent loop now routes the built-in `read_file` and approval-gated `write_file` tools through a `RuntimeToolAdapter`; the separate `reliagent` CLI runs fixed JSON workflows and provides `list`, `approve`, `deny`, `resume`, `reconcile`, and `cancel`. Other Agent tools are not migrated yet.
+
+The ML experiment is a non-coding product path over the same RuntimeExecutor. It validates a fixed local dataset, pauses before the external-effect experiment, runs deterministic ordinary least squares, extracts persisted JSON metrics, verifies one effect marker, and writes Raw JSON plus Markdown reports. It uses no network service or extra dependency.
+
+```mermaid
+flowchart LR
+    A[CoreCoder Agent] --> TA[RuntimeToolAdapter]
+    C[reliagent CLI] --> W[MLExperimentWorkflow]
+    E[Evaluation Adapter] --> W
+    TA --> X[RuntimeExecutor]
+    W --> X
+    X --> P[Policy and Approval]
+    X --> R[Managed Process Runner]
+    X --> S[(SQLite: Run, Step, ToolCall, Approval, Event)]
+    RM[RecoveryManager / Reconciliation] --> S
+    S --> T[Trace, Metrics, Raw JSON, Markdown]
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> created
+    created --> running
+    running --> waiting_approval
+    waiting_approval --> running: allow_once
+    waiting_approval --> failed: deny / APPROVAL_DENIED
+    running --> recoverable: process lost / uncertain effect
+    recoverable --> running: safe read-only retry
+    recoverable --> running: evidence-backed reconciliation
+    running --> succeeded
+    running --> failed
+    running --> cancelled
+```
+
+Minimal normal-path demo from a source checkout (copy the IDs printed by `start`):
+
+```bash
+WORKSPACE=$(mktemp -d /tmp/reliagent-ml.XXXXXX)
+reliagent workflow ml start --workspace "$WORKSPACE"
+reliagent approve <pending_approval_id> --workspace "$WORKSPACE"
+reliagent workflow ml resume <run_id> --workspace "$WORKSPACE"
+reliagent workflow ml report <run_id> --workspace "$WORKSPACE"
+```
+
+The last command creates `reports/<run_id>/ml-experiment-result.json` and `ml-experiment-report.md`. To exercise the two real process-loss boundaries, add `--inject-process-loss environment_after_start` to `start` (exit 86), or `--inject-process-loss experiment_after_effect` (exit 87). Environment loss is eligible for a new read-only attempt; the experiment loss is never auto-replayed and requires `reliagent reconcile <tool_call_id> --decision completed|retry|unresolved --workspace "$WORKSPACE"`.
 
 - Approval requests atomically persist the Approval, waiting Run/ToolCall states, and Event. An `allow_once` decision belongs to one ToolCall attempt and its stored arguments; it is not permission for another attempt. Denial cancels that call without spawning a process.
 - Policy declares risk, execution kind, deadline, and retry eligibility. It is not a security sandbox: a tool classified read-only still has the OS permissions of its process.
@@ -283,7 +326,15 @@ Run the fixed ten-case matrix with the same inputs under Baseline, Full, and No-
 reliagent eval phase3 --output /tmp/reliagent-eval
 ```
 
-Every one of the 90 repetitions invokes `RuntimeExecutor` and persists Run, Step, ToolCall, Event, Trace, and metric evidence. The generated Raw JSON is the source for the Markdown report. "90 / 90" means that the scenario-contract assertions passed; it does not mean that all faulted tasks succeeded. In the current deterministic run, task success was 10% for Baseline, 40% for Full, and 20% for No-recovery; recovery success across the four recovery scenarios was 0%, 50%, and 0%, respectively. The three effect-bearing scenarios recorded zero duplicate effects. This is not a production reliability benchmark or a general exactly-once guarantee. Full trace completeness is 80%, exposing known terminal-event gaps in interrupted/recovery paths; high-risk unknown outcomes remain `recoverable` until a human explicitly reconciles them.
+Every one of the 90 repetitions invokes `RuntimeExecutor` and persists Run, Step, ToolCall, Event, Trace, and metric evidence. The generated Raw JSON is the source for the Markdown report. "90 / 90" means that the scenario-contract assertions passed; it does not mean that all faulted tasks succeeded. In the current deterministic run, task success was 10% for Baseline, 40% for Full, and 20% for No-recovery; recovery success across the four recovery scenarios was 0%, 50%, and 0%, respectively. The three effect-bearing scenarios recorded zero duplicate effects. This is not a production reliability benchmark or a general exactly-once guarantee. Trace completeness is 100% in all three configurations; high-risk unknown outcomes remain `recoverable` until a human explicitly reconciles them.
+
+The workflow-specific matrix runs eight cases once under the same three configurations:
+
+```bash
+reliagent eval ml_workflow --output /tmp/reliagent-ml-eval
+```
+
+The current deterministic result is 24 / 24 scenario contracts, zero duplicate effects, and 100% Trace completeness in all three configurations. Task success is 37.5% for Baseline, 62.5% for Full, and 37.5% for No-recovery; Full recovery success is 50% because unresolved/damaged-effect cases intentionally remain blocked. These percentages describe only the fixed local scenarios and are reproducible from the generated Raw JSON.
 
 ## Related Projects
 
@@ -297,7 +348,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (417 passing tests plus one opt-in live-model test), `ruff check`, and `compileall`, and make sure they're green. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (456 passing tests plus one opt-in live-model test), `ruff check`, and `compileall`, and make sure they're green. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 

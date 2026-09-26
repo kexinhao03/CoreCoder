@@ -65,6 +65,7 @@ _RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
         RunStatus.RUNNING,
         RunStatus.PAUSED,
         RunStatus.RECOVERABLE,
+        RunStatus.FAILED,
         RunStatus.CANCELLED,
     }),
     RunStatus.PAUSED: frozenset({RunStatus.RUNNING, RunStatus.CANCELLED}),
@@ -87,6 +88,7 @@ _TOOL_CALL_TRANSITIONS: dict[ToolCallStatus, frozenset[ToolCallStatus]] = {
     }),
     ToolCallStatus.WAITING_APPROVAL: frozenset({
         ToolCallStatus.RUNNING,
+        ToolCallStatus.FAILED,
         ToolCallStatus.CANCELLED,
     }),
     ToolCallStatus.RUNNING: frozenset({
@@ -110,7 +112,11 @@ _TOOL_CALL_TRANSITIONS: dict[ToolCallStatus, frozenset[ToolCallStatus]] = {
 _STEP_TRANSITIONS: dict[StepStatus, frozenset[StepStatus]] = {
     StepStatus.PENDING: frozenset({StepStatus.RUNNING, StepStatus.CANCELLED, StepStatus.SKIPPED}),
     StepStatus.RUNNING: frozenset({StepStatus.WAITING_APPROVAL, StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.CANCELLED}),
-    StepStatus.WAITING_APPROVAL: frozenset({StepStatus.RUNNING, StepStatus.CANCELLED}),
+    StepStatus.WAITING_APPROVAL: frozenset({
+        StepStatus.RUNNING,
+        StepStatus.FAILED,
+        StepStatus.CANCELLED,
+    }),
     StepStatus.SUCCEEDED: frozenset(),
     StepStatus.FAILED: frozenset(),
     StepStatus.SKIPPED: frozenset(),

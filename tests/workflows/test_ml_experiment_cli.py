@@ -155,3 +155,24 @@ def test_ml_cli_evaluation_writes_twenty_four_real_results(tmp_path, capsys):
         "full",
         "no_recovery",
     }
+
+
+def test_ml_cli_denial_atomically_fails_the_workflow(tmp_path, capsys):
+    assert main([
+        "workflow", "ml", "start", "--workspace", str(tmp_path)
+    ]) == 0
+    created, waiting = _lines(capsys)
+
+    assert main([
+        "deny", waiting["pending_approval_id"], "--workspace", str(tmp_path)
+    ]) == 0
+    [denied] = _lines(capsys)
+    assert denied["decision"] == "deny"
+
+    assert main([
+        "workflow", "ml", "resume", created["run_id"],
+        "--workspace", str(tmp_path),
+    ]) == 0
+    [status] = _lines(capsys)
+    assert status["status"] == "failed"
+    assert not (tmp_path / "artifacts").exists()

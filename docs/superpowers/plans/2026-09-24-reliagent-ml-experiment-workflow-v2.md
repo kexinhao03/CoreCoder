@@ -389,7 +389,7 @@ Commit: `feat(evals): benchmark ML workflow recovery`
 - Document exact committed CLI commands, safety boundaries, and measured outputs only.
 - Produce three temporary evidence directories: normal, environment recovery, experiment reconciliation.
 
-- [ ] **Step 1: Run complete verification**
+- [x] **Step 1: Run complete verification**
 
 Run exactly:
 
@@ -402,11 +402,11 @@ git diff --check
 
 Record commands, exit codes, test counts, and any opt-in skips. Update README package line/test counts using the repository's existing test formula.
 
-- [ ] **Step 2: Run three real process demos**
+- [x] **Step 2: Run three real process demos**
 
 In explicit `/private/tmp/reliagent-ml-*` workspaces, run: normal approval completion/report; exit-86 environment recovery; exit-87 experiment effect followed by evidence-driven completed reconciliation/report. Then run resume twice and compare ToolCalls, Events, marker bytes, raw JSON, and Markdown bytes.
 
-- [ ] **Step 3: Inspect generated evidence**
+- [x] **Step 3: Inspect generated evidence**
 
 Verify metric literals from the fixed data, one marker, recovery lineage, no experiment retry, artifact hashes, Trace integrity, unavailable token/cost, Git revision, and clean conclusion boundaries. Do not copy temporary SQLite or generated evidence into Git unless the user separately requests permanent samples.
 

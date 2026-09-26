@@ -2,6 +2,7 @@
 
 import sqlite3
 
+from corecoder.runtime.approvals import ApprovalDecision
 from corecoder.runtime.state import ExecutionKind, RiskLevel, ToolCallStatus
 from corecoder.runtime.tracing import TraceService
 
@@ -40,6 +41,44 @@ def test_trace_lists_missing_terminal_tool_event(running_store):
     integrity = TraceService(running_store).export_run("run-1")["integrity"]
 
     assert integrity["missing"] == [{"tool_call_id": call.id, "event": "tool.completed"}]
+
+
+def test_trace_accepts_confirmed_failed_recovery_as_terminal_evidence(running_store):
+    call = running_store.create_tool_call(
+        run_id="run-1", tool_name="probe", arguments={"argv": ["probe"]},
+        risk_level=RiskLevel.READ_ONLY, execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=True, idempotency_key="key", timeout_seconds=2,
+    )
+    running_store.transition_tool_call(call.id, ToolCallStatus.RUNNING, "tool.started")
+    running_store.transition_tool_call(
+        call.id, ToolCallStatus.INTERRUPTED, "tool.interrupted"
+    )
+    running_store.reconcile_interrupted_tool_call(
+        call.id, ToolCallStatus.FAILED, "confirmed_failed"
+    )
+
+    integrity = TraceService(running_store).export_run("run-1")["integrity"]
+
+    assert integrity["missing"] == []
+
+
+def test_trace_accepts_approval_denial_as_cancelled_terminal_evidence(running_store):
+    call = running_store.create_tool_call(
+        run_id="run-1", tool_name="mutate", arguments={"argv": ["mutate"]},
+        risk_level=RiskLevel.MUTATING, execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=False, idempotency_key=None, timeout_seconds=2,
+    )
+    approval = running_store.request_approval(
+        call.id,
+        arguments_summary="mutate",
+        workspace=".",
+        risk_reason="mutation",
+    )
+    running_store.resolve_approval(approval.id, ApprovalDecision.DENY)
+
+    integrity = TraceService(running_store).export_run("run-1")["integrity"]
+
+    assert integrity["missing"] == []
 
 
 def test_trace_exports_approval_records(running_store):

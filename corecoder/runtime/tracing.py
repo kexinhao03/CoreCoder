@@ -26,12 +26,29 @@ class TraceService:
             ToolCallStatus.CANCELLED: ("tool.cancelled",),
             ToolCallStatus.INTERRUPTED: ("tool.interrupted",),
         }
+        recovery_resolutions = {
+            ToolCallStatus.SUCCEEDED: "confirmed_succeeded",
+            ToolCallStatus.FAILED: "confirmed_failed",
+            ToolCallStatus.CANCELLED: "abandon",
+        }
         missing = []
         for call in calls:
             required = required_events.get(call.status)
             if required and not any(
-                event.type in required
-                and event.payload.get("tool_call_id") == call.id
+                event.payload.get("tool_call_id") == call.id
+                and (
+                    event.type in required
+                    or (
+                        event.type == "recovery.resolved"
+                        and event.payload.get("resolution")
+                        == recovery_resolutions.get(call.status)
+                    )
+                    or (
+                        call.status is ToolCallStatus.CANCELLED
+                        and event.type == "approval.resolved"
+                        and event.payload.get("decision") == "deny"
+                    )
+                )
                 for event in events
             ):
                 missing.append({"tool_call_id": call.id, "event": required[0]})

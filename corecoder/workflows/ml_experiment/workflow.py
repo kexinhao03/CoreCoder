@@ -12,6 +12,8 @@ from typing import NoReturn
 
 from corecoder.reliagent import ReliAgentRuntime, StepMetadata, TaskStep
 from corecoder.runtime import (
+    ApprovalDecision,
+    ApprovalRecord,
     ManagedProcessRunner,
     RecoveryKind,
     RecoveryManager,
@@ -116,6 +118,15 @@ class MLExperimentWorkflow:
 
     def status(self, run_id: str) -> WorkflowStatus:
         return self._status(run_id)
+
+    def resolve_approval(
+        self, approval_id: str, decision: ApprovalDecision
+    ) -> ApprovalRecord:
+        if decision is ApprovalDecision.DENY:
+            return self.store.fail_denied_approval(
+                approval_id, error_code="APPROVAL_DENIED"
+            )
+        return self.store.resolve_approval(approval_id, decision)
 
     def resume(self, run_id: str) -> WorkflowStatus:
         run = self.store.get_run(run_id)

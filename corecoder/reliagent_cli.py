@@ -268,7 +268,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.command == "approve"
             else ApprovalDecision.DENY
         )
-        approval = store.resolve_approval(args.approval_id, decision)
+        approval = (
+            ml_workflow.resolve_approval(args.approval_id, decision)
+            if ml_workflow is not None
+            else store.resolve_approval(args.approval_id, decision)
+        )
         print(json.dumps({
             "approval_id": approval.id,
             "decision": approval.decision.value,

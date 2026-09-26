@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+
+import pytest
 
 from corecoder.runtime import ApprovalDecision, RunStatus, StepStatus, ToolCallStatus
 from corecoder.workflows.ml_experiment.workflow import MLExperimentWorkflow
@@ -30,7 +33,7 @@ def test_workflow_stops_for_approval_then_completes_real_fixture(tmp_path):
     assert workflow.definition(waiting.id).experiment_id in approval.arguments_summary
     assert not workflow.definition(waiting.id).artifacts.effects_file.exists()
 
-    workflow.store.resolve_approval(approval.id, ApprovalDecision.ALLOW_ONCE)
+    workflow.resolve_approval(approval.id, ApprovalDecision.ALLOW_ONCE)
     completed = workflow.resume(waiting.id)
 
     assert completed.status == RunStatus.SUCCEEDED.value
@@ -57,19 +60,54 @@ def test_workflow_stops_for_approval_then_completes_real_fixture(tmp_path):
     ) == 1
 
 
-def test_approval_denial_cancels_without_experiment_artifacts(tmp_path):
+def test_approval_denial_fails_workflow_atomically_without_artifacts(tmp_path):
     workflow = MLExperimentWorkflow(tmp_path)
     waiting = workflow.create()
     experiment_call = workflow.store.list_tool_calls(waiting.id)[1]
     approval = workflow.store.get_approval_for_tool_call(experiment_call.id)
 
-    workflow.store.resolve_approval(approval.id, ApprovalDecision.DENY)
-    denied = workflow.resume(waiting.id)
+    workflow.resolve_approval(approval.id, ApprovalDecision.DENY)
+    denied = workflow.status(waiting.id)
 
-    assert denied.status == RunStatus.CANCELLED.value
-    assert workflow.store.get_tool_call(experiment_call.id).status is ToolCallStatus.CANCELLED
-    assert workflow.store.list_steps(waiting.id)[1].status is StepStatus.CANCELLED
+    assert denied.status == RunStatus.FAILED.value
+    denied_call = workflow.store.get_tool_call(experiment_call.id)
+    assert denied_call.status is ToolCallStatus.FAILED
+    assert denied_call.result_summary == "APPROVAL_DENIED"
+    assert workflow.store.list_steps(waiting.id)[1].status is StepStatus.FAILED
+    assert [event.type for event in workflow.store.list_events(waiting.id)[-4:]] == [
+        "approval.resolved",
+        "tool.failed",
+        "step.failed",
+        "run.failed",
+    ]
     assert not workflow.definition(waiting.id).artifacts.artifact_dir.exists()
+
+
+def test_approval_denial_rolls_back_every_state_when_audit_write_fails(tmp_path):
+    workflow = MLExperimentWorkflow(tmp_path)
+    waiting = workflow.create()
+    experiment_call = workflow.store.list_tool_calls(waiting.id)[1]
+    approval = workflow.store.get_approval_for_tool_call(experiment_call.id)
+    events_before = workflow.store.list_events(waiting.id)
+    with sqlite3.connect(workflow.store.path) as connection:
+        connection.execute(
+            """CREATE TRIGGER fail_denial BEFORE INSERT ON events
+               WHEN NEW.type = 'run.failed'
+               BEGIN SELECT RAISE(ABORT, 'injected denial failure'); END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected denial failure"):
+        workflow.resolve_approval(approval.id, ApprovalDecision.DENY)
+
+    assert workflow.store.get_run(waiting.id).status is RunStatus.WAITING_APPROVAL
+    assert workflow.store.get_tool_call(experiment_call.id).status is (
+        ToolCallStatus.WAITING_APPROVAL
+    )
+    assert workflow.store.list_steps(waiting.id)[1].status is (
+        StepStatus.WAITING_APPROVAL
+    )
+    assert workflow.store.get_approval(approval.id).decision is None
+    assert workflow.store.list_events(waiting.id) == events_before
 
 
 def test_normal_workflow_has_no_fault_plan(tmp_path):

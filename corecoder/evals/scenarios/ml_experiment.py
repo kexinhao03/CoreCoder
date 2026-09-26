@@ -23,13 +23,10 @@ def _exit_process(code: int) -> None:
 
 
 def _approve_experiment(workflow: MLExperimentWorkflow, run_id: str) -> None:
-    call = next(
-        call
-        for call in workflow.store.list_tool_calls(run_id)
-        if call.tool_name.endswith("run_experiment")
-    )
-    approval = workflow.store.get_approval_for_tool_call(call.id)
-    workflow.store.resolve_approval(approval.id, ApprovalDecision.ALLOW_ONCE)
+    approval_id = workflow.status(run_id).pending_approval_id
+    if approval_id is None:
+        raise ValueError("ML experiment is not waiting for approval")
+    workflow.resolve_approval(approval_id, ApprovalDecision.ALLOW_ONCE)
 
 
 def _complete_normal(workflow: MLExperimentWorkflow) -> str:
@@ -138,8 +135,7 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
         run_id = run.id
         call = workflow.store.list_tool_calls(run_id)[1]
         approval = workflow.store.get_approval_for_tool_call(call.id)
-        workflow.store.resolve_approval(approval.id, ApprovalDecision.DENY)
-        workflow.resume(run_id)
+        workflow.resolve_approval(approval.id, ApprovalDecision.DENY)
     elif scenario == "ml_report_tamper":
         workflow = MLExperimentWorkflow(workspace)
         run_id = _complete_normal(workflow)
@@ -165,7 +161,7 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
     expected_status = {
         "ml_normal_success": RunStatus.SUCCEEDED,
         "ml_repeated_resume": RunStatus.SUCCEEDED,
-        "ml_approval_denial": RunStatus.CANCELLED,
+        "ml_approval_denial": RunStatus.FAILED,
         "ml_report_tamper": RunStatus.SUCCEEDED,
     }.get(scenario)
     if scenario == "ml_environment_recovery":

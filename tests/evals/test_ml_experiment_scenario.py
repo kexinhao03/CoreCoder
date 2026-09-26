@@ -23,5 +23,5 @@ def test_ml_workflow_matrix_executes_eight_real_runtime_cases(tmp_path):
     assert first[("ML02", "baseline")].recovery_succeeded is False
     assert first[("ML04", "full")].task_succeeded is True
     assert first[("ML05", "full")].task_succeeded is False
-    assert first[("ML07", "full")].metrics_snapshot["final_status"] == "cancelled"
+    assert first[("ML07", "full")].metrics_snapshot["final_status"] == "failed"
     assert first[("ML08", "full")].assertions["scenario_contract"] is True

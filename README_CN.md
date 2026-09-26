@@ -2,7 +2,7 @@
 
 # CoreCoder
 
-**编程 agent 里的 nanoGPT。1.2k 行引擎、整包 5759 行可读的纯 Python，读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
+**编程 agent 里的 nanoGPT。1.2k 行引擎、整包 8307 行可读的纯 Python，读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
 
 *learn from it · fork it · ship something better*
 
@@ -25,7 +25,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1171 行 / 整包 5759 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 1171 行 / 整包 8307 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -36,9 +36,9 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1171 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 47 个文件、物理 6610 行、净 5759 行。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints 和 ReliAgent 运行时基础，下文各有交代。
+引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1171 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 63 个文件、物理 9355 行、净 8307 行。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
 
-它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；默认有 417 个测试通过，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；默认有 456 个测试通过，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -262,9 +262,52 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 每个配好的服务器在启动时拉起一个子进程，握手、列出工具；每件工具都注册成 `mcp__<服务器>__<工具>`，钩子匹配和授权闸对它和内建工具一视同仁。MCP 工具不在只读名单里，模型要调，得先问过你。握手给十五秒，一次调用给六十秒；服务器挂了或者迟迟不应，那一次调用就以普通工具结果的形式报错，循环照常往下走。客户端只实现协议里工具那一小片（initialize、tools/list、tools/call），别的一概不碰，所以整块实现收在 `mcp.py` 一个文件里，两百行出头。没有 `mcp.json` 就没有 MCP，一切照旧。
 
-## ReliAgent 执行与恢复基础
+## ReliAgent Runtime 与确定性机器学习 Workflow
 
 `corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。Agent 循环现已通过 `RuntimeToolAdapter` 接入内建 `read_file` 和需要审批的 `write_file`；独立的 `reliagent` CLI 可执行固定 JSON workflow，并提供 `list`、`approve`、`deny`、`resume`、`reconcile`、`cancel`。其他 Agent 工具尚未迁移。
+
+机器学习实验是建立在同一个 RuntimeExecutor 上的非 Coding 路径：检查固定本地数据集，在外部效果实验前等待审批，执行确定性普通最小二乘，提取持久化 JSON 指标，验证唯一 Effect Marker，再生成 Raw JSON 和 Markdown 报告。全过程不使用网络服务，也不增加依赖。
+
+```mermaid
+flowchart LR
+    A[CoreCoder Agent] --> TA[RuntimeToolAdapter]
+    C[reliagent CLI] --> W[MLExperimentWorkflow]
+    E[Evaluation Adapter] --> W
+    TA --> X[RuntimeExecutor]
+    W --> X
+    X --> P[Policy 与 Approval]
+    X --> R[Managed Process Runner]
+    X --> S[(SQLite: Run, Step, ToolCall, Approval, Event)]
+    RM[RecoveryManager / Reconciliation] --> S
+    S --> T[Trace, Metrics, Raw JSON, Markdown]
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> created
+    created --> running
+    running --> waiting_approval
+    waiting_approval --> running: allow_once
+    waiting_approval --> failed: deny / APPROVAL_DENIED
+    running --> recoverable: 进程丢失 / 结果不确定
+    recoverable --> running: 安全只读重试
+    recoverable --> running: 基于证据对账
+    running --> succeeded
+    running --> failed
+    running --> cancelled
+```
+
+源码检出后的最小正常路径（把 `start` 输出的 ID 复制到后续命令）：
+
+```bash
+WORKSPACE=$(mktemp -d /tmp/reliagent-ml.XXXXXX)
+reliagent workflow ml start --workspace "$WORKSPACE"
+reliagent approve <pending_approval_id> --workspace "$WORKSPACE"
+reliagent workflow ml resume <run_id> --workspace "$WORKSPACE"
+reliagent workflow ml report <run_id> --workspace "$WORKSPACE"
+```
+
+最后一条命令生成 `reports/<run_id>/ml-experiment-result.json` 与 `ml-experiment-report.md`。要触发两个真实进程退出边界，可在 `start` 后增加 `--inject-process-loss environment_after_start`（退出码 86），或 `--inject-process-loss experiment_after_effect`（退出码 87）。环境检查丢失允许创建新的只读 Attempt；实验结果未知时绝不自动重放，必须运行 `reliagent reconcile <tool_call_id> --decision completed|retry|unresolved --workspace "$WORKSPACE"`。
 
 - 审批请求在一个事务里保存 Approval、等待中的 Run/ToolCall 状态和 Event。`allow_once` 绑定一个 ToolCall attempt 及其已存参数，不能授权另一个 attempt。拒绝会取消该调用，不启动进程。
 - 策略声明风险、执行类型、时限与重试资格，不是安全沙箱：被归类为只读的工具仍拥有其进程的操作系统权限。
@@ -283,7 +326,15 @@ Event 保留每个 Run 内的序号和 ToolCall 标识。Trace 导出和派生�
 reliagent eval phase3 --output /tmp/reliagent-eval
 ```
 
-90 次运行每次都会调用 `RuntimeExecutor`，并持久化 Run、Step、ToolCall、Event、Trace 和指标证据。“90 / 90”表示场景契约断言全部通过，不表示所有故障任务都成功。当前确定性运行中，Baseline、Full、No-recovery 的任务成功率分别为 10%、40%、20%；在四个恢复场景上的恢复成功率分别为 0%、50%、0%。三个包含外部效果的场景均记录到零重复副作用。这不是生产环境可靠性基准，也不是通用 exactly-once 保证。Full 的 Trace 完整率为 80%，如实暴露了中断/恢复路径中的终止事件缺口；高风险未知结果会保持 `recoverable`，直到人工显式 reconcile。
+90 次运行每次都会调用 `RuntimeExecutor`，并持久化 Run、Step、ToolCall、Event、Trace 和指标证据。“90 / 90”表示场景契约断言全部通过，不表示所有故障任务都成功。当前确定性运行中，Baseline、Full、No-recovery 的任务成功率分别为 10%、40%、20%；在四个恢复场景上的恢复成功率分别为 0%、50%、0%。三个包含外部效果的场景均记录到零重复副作用。这不是生产环境可靠性基准，也不是通用 exactly-once 保证。三种配置的 Trace 完整率均为 100%；高风险未知结果仍保持 `recoverable`，直到人工显式 reconcile。
+
+Workflow 专用矩阵用同一输入在三种配置下各运行八个场景：
+
+```bash
+reliagent eval ml_workflow --output /tmp/reliagent-ml-eval
+```
+
+当前确定性结果为 24 / 24 场景契约通过、零重复副作用，三种配置的 Trace 完整率均为 100%。Baseline、Full、No-recovery 的任务成功率分别为 37.5%、62.5%、37.5%；Full 恢复成功率为 50%，因为结果未决和产物损坏场景会按设计保持阻断。这些百分比只描述固定本地场景，可由生成的 Raw JSON 复现。
 
 ## 相关项目
 
@@ -297,7 +348,7 @@ reliagent eval phase3 --output /tmp/reliagent-eval
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（默认 417 个测试通过，另有一个真实模型测试需显式启用）、`ruff check` 和 `compileall`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`（默认 456 个测试通过，另有一个真实模型测试需显式启用）、`ruff check` 和 `compileall`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 

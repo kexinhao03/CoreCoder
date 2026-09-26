@@ -995,6 +995,116 @@ class SQLiteStore:
             connection.close()
         return self._approval_from_row(updated_row)
 
+    def fail_denied_approval(
+        self,
+        approval_id: str,
+        *,
+        error_code: str,
+    ) -> ApprovalRecord:
+        """Atomically fail a stepped workflow when its approval is denied."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            approval_row = connection.execute(
+                "SELECT * FROM approvals WHERE id = ?", (approval_id,)
+            ).fetchone()
+            if approval_row is None:
+                raise KeyError(f"approval not found: {approval_id}")
+            call_row = connection.execute(
+                "SELECT * FROM tool_calls WHERE id = ?",
+                (approval_row["tool_call_id"],),
+            ).fetchone()
+            run_row = connection.execute(
+                "SELECT * FROM runs WHERE id = ?", (call_row["run_id"],)
+            ).fetchone()
+            step_row = connection.execute(
+                "SELECT * FROM steps WHERE id = ?", (call_row["step_id"],)
+            ).fetchone()
+            if (
+                ApprovalStatus(approval_row["status"]) is not ApprovalStatus.PENDING
+                or RunStatus(run_row["status"]) is not RunStatus.WAITING_APPROVAL
+                or ToolCallStatus(call_row["status"])
+                is not ToolCallStatus.WAITING_APPROVAL
+                or step_row is None
+                or StepStatus(step_row["status"]) is not StepStatus.WAITING_APPROVAL
+            ):
+                raise ValueError("approval state mismatch for workflow denial")
+            ensure_run_transition(RunStatus.WAITING_APPROVAL, RunStatus.FAILED)
+            ensure_tool_call_transition(
+                ToolCallStatus.WAITING_APPROVAL, ToolCallStatus.FAILED
+            )
+            ensure_step_transition(StepStatus.WAITING_APPROVAL, StepStatus.FAILED)
+            connection.execute(
+                """UPDATE approvals SET status = ?, decision = ?, resolved_at = ?
+                   WHERE id = ?""",
+                (
+                    ApprovalStatus.DENIED.value,
+                    ApprovalDecision.DENY.value,
+                    timestamp,
+                    approval_id,
+                ),
+            )
+            connection.execute(
+                """UPDATE tool_calls SET status = ?, result_summary = ?,
+                   updated_at = ?, ended_at = ? WHERE id = ?""",
+                (
+                    ToolCallStatus.FAILED.value,
+                    error_code,
+                    timestamp,
+                    timestamp,
+                    call_row["id"],
+                ),
+            )
+            connection.execute(
+                """UPDATE steps SET status = ?, updated_at = ?, ended_at = ?
+                   WHERE id = ?""",
+                (StepStatus.FAILED.value, timestamp, timestamp, step_row["id"]),
+            )
+            connection.execute(
+                """UPDATE runs SET status = ?, updated_at = ?, ended_at = ?
+                   WHERE id = ?""",
+                (RunStatus.FAILED.value, timestamp, timestamp, run_row["id"]),
+            )
+            events = (
+                (
+                    "approval.resolved",
+                    {
+                        "approval_id": approval_id,
+                        "tool_call_id": call_row["id"],
+                        "decision": ApprovalDecision.DENY.value,
+                    },
+                ),
+                (
+                    "tool.failed",
+                    {"tool_call_id": call_row["id"], "error_code": error_code},
+                ),
+                (
+                    "step.failed",
+                    {"step_id": step_row["id"], "error_code": error_code},
+                ),
+                ("run.failed", {"error_code": error_code}),
+            )
+            for event_type, payload in events:
+                self._insert_event(
+                    connection,
+                    run_id=run_row["id"],
+                    sequence=self._next_event_sequence(connection, run_row["id"]),
+                    event_type=event_type,
+                    payload=payload,
+                    created_at=timestamp,
+                )
+            updated_row = connection.execute(
+                "SELECT * FROM approvals WHERE id = ?", (approval_id,)
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self._approval_from_row(updated_row)
+
     def get_approval(self, approval_id: str) -> ApprovalRecord:
         with closing(self._connect()) as connection:
             row = connection.execute(
