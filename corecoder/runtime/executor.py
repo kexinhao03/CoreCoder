@@ -66,6 +66,7 @@ class RuntimeExecutor:
         self._process_runner = process_runner or ManagedProcessRunner()
         self._fault_injector = fault_injector
         self._active_cancellations: dict[str, tuple[str, threading.Event]] = {}
+        self._cancellation_monitor_stops: dict[str, threading.Event] = {}
         self._cancellation_lock = threading.Lock()
 
     def cancel_run(self, run_id: str) -> RunRecord:
@@ -91,17 +92,38 @@ class RuntimeExecutor:
 
     def _register_cancellation(self, call: ToolCallRecord) -> threading.Event:
         cancellation = threading.Event()
+        monitor_stop = threading.Event()
         with self._cancellation_lock:
             self._active_cancellations[call.id] = (call.run_id, cancellation)
+            self._cancellation_monitor_stops[call.id] = monitor_stop
             # Cancellation may commit after tool.started but before registration.
             # Register first so a later cancellation either finds us or is seen here.
             if self._store.get_run(call.run_id).status is RunStatus.CANCELLED:
                 cancellation.set()
+        threading.Thread(
+            target=self._monitor_persisted_cancellation,
+            args=(call.run_id, cancellation, monitor_stop),
+            daemon=True,
+        ).start()
         return cancellation
+
+    def _monitor_persisted_cancellation(
+        self,
+        run_id: str,
+        cancellation: threading.Event,
+        monitor_stop: threading.Event,
+    ) -> None:
+        while not monitor_stop.wait(0.05):
+            if self._store.get_run(run_id).status is RunStatus.CANCELLED:
+                cancellation.set()
+                return
 
     def _unregister_cancellation(self, call_id: str) -> None:
         with self._cancellation_lock:
             self._active_cancellations.pop(call_id, None)
+            monitor_stop = self._cancellation_monitor_stops.pop(call_id, None)
+        if monitor_stop is not None:
+            monitor_stop.set()
 
     def submit_subprocess(
         self,
@@ -112,11 +134,15 @@ class RuntimeExecutor:
         tool_call_id: str | None = None,
         step_id: str | None = None,
         approval_id: str | None = None,
+        approval_experiment_id: str | None = None,
+        approval_definition_hash: str | None = None,
     ) -> PendingApproval | RuntimeResult:
         argv = _validated_argv(argv)
         call = self._submit(
             run_id, tool_name, {"argv": list(argv)}, ExecutionKind.SUBPROCESS,
             tool_call_id=tool_call_id, step_id=step_id, approval_id=approval_id,
+            approval_experiment_id=approval_experiment_id,
+            approval_definition_hash=approval_definition_hash,
         )
         if isinstance(call, PendingApproval):
             return call
@@ -136,6 +162,7 @@ class RuntimeExecutor:
         call = self._submit(
             run_id, tool_name, arguments, ExecutionKind.IN_PROCESS,
             tool_call_id=tool_call_id, step_id=step_id, approval_id=approval_id,
+            approval_experiment_id=None, approval_definition_hash=None,
         )
         if isinstance(call, PendingApproval):
             return call
@@ -151,6 +178,8 @@ class RuntimeExecutor:
         tool_call_id: str | None,
         step_id: str | None,
         approval_id: str | None,
+        approval_experiment_id: str | None,
+        approval_definition_hash: str | None,
     ) -> PendingApproval | ToolCallRecord:
         run = self._require_running(run_id)
         policy = self._policies.resolve(tool_name)
@@ -183,6 +212,8 @@ class RuntimeExecutor:
                     workspace=run.workspace,
                     risk_reason=policy.risk_level.value,
                     approval_id=approval_id,
+                    experiment_id=approval_experiment_id,
+                    definition_hash=approval_definition_hash,
                 )
                 return PendingApproval(self._store.get_tool_call(call.id), approval)
         except ValueError:

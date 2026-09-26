@@ -8,6 +8,7 @@ from corecoder.reliagent import ReliAgentRuntime, StepMetadata, TaskStep
 from corecoder.runtime import (
     ApprovalDecision,
     ExecutionKind,
+    ProcessResult,
     RiskLevel,
     RunStatus,
     RuntimeExecutor,
@@ -16,6 +17,40 @@ from corecoder.runtime import (
     ToolPolicy,
     ToolPolicyRegistry,
 )
+
+
+def test_adapter_keeps_completed_call_fact_but_cancels_step_on_finish_race(tmp_path):
+    store = SQLiteStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    policy = ToolPolicy(
+        risk_level=RiskLevel.READ_ONLY, execution_kind=ExecutionKind.SUBPROCESS,
+        timeout_seconds=5, max_attempts=1, idempotent=True, auto_retry=False,
+        retryable_failures=frozenset(), output_limit=1000,
+    )
+    external = RuntimeExecutor(
+        SQLiteStore(store.path), ToolPolicyRegistry({"probe": policy})
+    )
+
+    class CancelThenCompleteRunner:
+        def run(self, spec, cancel_event):
+            [active_run] = store.list_runs()
+            external.cancel_run(active_run.id)
+            return ProcessResult(0, "completed", "", 0.01, None, True)
+
+    runtime = ReliAgentRuntime(
+        store,
+        RuntimeExecutor(
+            store, ToolPolicyRegistry({"probe": policy}), CancelThenCompleteRunner()
+        ),
+    )
+
+    run = runtime.run_task(
+        goal="cancel race", workspace=tmp_path, steps=(TaskStep("probe", ("probe",)),)
+    )
+
+    assert run.status is RunStatus.CANCELLED
+    assert store.list_steps(run.id)[0].status is StepStatus.CANCELLED
+    assert store.list_tool_calls(run.id)[0].status.value == "succeeded"
 
 
 def test_adapter_executes_a_step_through_runtime_and_skips_it_on_resume(tmp_path):

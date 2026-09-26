@@ -138,6 +138,9 @@ def test_retry_requires_no_effect_and_creates_fresh_attempt_and_approval(tmp_pat
     new_approval = workflow.store.get_approval(result.new_approval_id)
     assert new_approval.tool_call_id == retry.id
     assert new_approval.id != approval.id
+    assert new_approval.attempt == retry.attempt == 2
+    assert new_approval.experiment_id == approval.experiment_id
+    assert new_approval.definition_hash == approval.definition_hash
     assert workflow.store.get_run(waiting.id).status is RunStatus.WAITING_APPROVAL
     assert workflow.store.list_steps(waiting.id)[1].status is StepStatus.WAITING_APPROVAL
 

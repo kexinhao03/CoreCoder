@@ -123,7 +123,10 @@ class SQLiteStore:
                     workspace TEXT NOT NULL,
                     risk_reason TEXT NOT NULL,
                     requested_at TEXT NOT NULL,
-                    resolved_at TEXT
+                    resolved_at TEXT,
+                    attempt INTEGER,
+                    experiment_id TEXT,
+                    definition_hash TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS events (
@@ -203,6 +206,16 @@ class SQLiteStore:
                 connection.execute("ALTER TABLE steps ADD COLUMN definition_version TEXT")
             if "definition_hash" not in step_columns:
                 connection.execute("ALTER TABLE steps ADD COLUMN definition_hash TEXT")
+            approval_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(approvals)")
+            }
+            if "attempt" not in approval_columns:
+                connection.execute("ALTER TABLE approvals ADD COLUMN attempt INTEGER")
+            if "experiment_id" not in approval_columns:
+                connection.execute("ALTER TABLE approvals ADD COLUMN experiment_id TEXT")
+            if "definition_hash" not in approval_columns:
+                connection.execute("ALTER TABLE approvals ADD COLUMN definition_hash TEXT")
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_steps_run_step_key
@@ -787,6 +800,8 @@ class SQLiteStore:
         workspace: str,
         risk_reason: str,
         approval_id: str | None = None,
+        experiment_id: str | None = None,
+        definition_hash: str | None = None,
     ) -> ApprovalRecord:
         resolved_id = approval_id or uuid.uuid4().hex
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -822,14 +837,18 @@ class SQLiteStore:
                 risk_reason=risk_reason,
                 requested_at=timestamp,
                 resolved_at=None,
+                attempt=call_row["attempt"],
+                experiment_id=experiment_id,
+                definition_hash=definition_hash,
             )
             connection.execute(
                 """
                 INSERT INTO approvals (
                     id, tool_call_id, status, decision, tool_name,
                     arguments_summary, workspace, risk_reason,
-                    requested_at, resolved_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    requested_at, resolved_at, attempt, experiment_id,
+                    definition_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     approval.id,
@@ -842,6 +861,9 @@ class SQLiteStore:
                     approval.risk_reason,
                     approval.requested_at,
                     approval.resolved_at,
+                    approval.attempt,
+                    approval.experiment_id,
+                    approval.definition_hash,
                 ),
             )
             connection.execute(
@@ -1816,6 +1838,11 @@ class SQLiteStore:
             ).fetchone()
             if step is None or StepStatus(step["status"]) is not StepStatus.RUNNING:
                 raise ValueError("interrupted ML Step must still be running")
+            original_approval = connection.execute(
+                "SELECT * FROM approvals WHERE tool_call_id = ?", (call.id,)
+            ).fetchone()
+            if original_approval is None:
+                raise ValueError("interrupted ML ToolCall has no Approval")
             if connection.execute(
                 "SELECT 1 FROM tool_calls WHERE retry_of = ?", (call.id,)
             ).fetchone() is not None:
@@ -1855,8 +1882,9 @@ class SQLiteStore:
                 INSERT INTO approvals (
                     id, tool_call_id, status, decision, tool_name,
                     arguments_summary, workspace, risk_reason,
-                    requested_at, resolved_at
-                ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)
+                    requested_at, resolved_at, attempt, experiment_id,
+                    definition_hash
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
                 """,
                 (
                     approval_id,
@@ -1867,6 +1895,9 @@ class SQLiteStore:
                     run.workspace,
                     call.risk_level.value,
                     timestamp,
+                    call.attempt + 1,
+                    original_approval["experiment_id"],
+                    original_approval["definition_hash"],
                 ),
             )
             connection.execute(
@@ -2052,6 +2083,9 @@ class SQLiteStore:
             risk_reason=row["risk_reason"],
             requested_at=row["requested_at"],
             resolved_at=row["resolved_at"],
+            attempt=row["attempt"],
+            experiment_id=row["experiment_id"],
+            definition_hash=row["definition_hash"],
         )
 
     @staticmethod

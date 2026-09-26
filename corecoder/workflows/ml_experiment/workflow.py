@@ -60,13 +60,19 @@ class MLExperimentWorkflow:
         *,
         process_runner: ManagedProcessRunner | None = None,
         exit_process: Callable[[int], NoReturn] = os._exit,
+        max_attempts: int = 2,
+        auto_retry: bool = True,
+        recovery_enabled: bool = True,
     ) -> None:
         self.workspace = resolve_workspace(workspace)
         runtime_dir = self.workspace / ".reliagent"
         runtime_dir.mkdir(exist_ok=True)
         self.store = SQLiteStore(runtime_dir / "runtime.sqlite")
         self.store.initialize()
-        self.policies = build_policy_registry()
+        self.policies = build_policy_registry(
+            max_attempts=max_attempts, auto_retry=auto_retry
+        )
+        self.recovery_enabled = recovery_enabled
         injector = RuntimeFaultInjector(self.store, exit_process=exit_process)
         self.executor = RuntimeExecutor(
             self.store,
@@ -137,7 +143,7 @@ class MLExperimentWorkflow:
         }:
             return self._status(run_id)
         definition = self._validate_definition(run)
-        candidates = self.recovery.scan(run_id=run_id)
+        candidates = self.recovery.scan(run_id=run_id) if self.recovery_enabled else ()
         for candidate in candidates:
             if candidate.kind is RecoveryKind.HUMAN_REQUIRED:
                 return self._status(
@@ -216,6 +222,8 @@ class MLExperimentWorkflow:
             TaskStep(
                 step.tool_name,
                 (sys.executable, str(step.script_path), *definition.arguments_for(step.step_key)),
+                definition.experiment_id if step.step_key == "run_experiment" else None,
+                step.definition_hash if step.step_key == "run_experiment" else None,
             )
             for step in definition.steps
         )

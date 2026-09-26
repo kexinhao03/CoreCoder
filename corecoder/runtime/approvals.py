@@ -32,6 +32,9 @@ class ApprovalRecord:
     risk_reason: str
     requested_at: str
     resolved_at: str | None
+    attempt: int | None = None
+    experiment_id: str | None = None
+    definition_hash: str | None = None
 
 
 def summarize_arguments(arguments: dict) -> str:

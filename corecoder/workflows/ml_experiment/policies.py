@@ -9,7 +9,9 @@ from corecoder.runtime import (
 )
 
 
-def build_policy_registry() -> ToolPolicyRegistry:
+def build_policy_registry(
+    *, max_attempts: int = 2, auto_retry: bool = True
+) -> ToolPolicyRegistry:
     retryable = frozenset(
         {FailureKind.NONZERO_EXIT, FailureKind.SPAWN_ERROR, FailureKind.TIMED_OUT}
     )
@@ -17,9 +19,9 @@ def build_policy_registry() -> ToolPolicyRegistry:
         risk_level=RiskLevel.READ_ONLY,
         execution_kind=ExecutionKind.SUBPROCESS,
         timeout_seconds=30,
-        max_attempts=2,
+        max_attempts=max_attempts,
         idempotent=True,
-        auto_retry=True,
+        auto_retry=auto_retry,
         retryable_failures=retryable,
         output_limit=15_000,
     )

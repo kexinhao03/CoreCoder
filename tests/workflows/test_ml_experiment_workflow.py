@@ -110,6 +110,68 @@ def test_approval_denial_rolls_back_every_state_when_audit_write_fails(tmp_path)
     assert workflow.store.list_events(waiting.id) == events_before
 
 
+def test_resume_finishes_step_after_crash_between_tool_and_step_commit(
+    tmp_path, monkeypatch
+):
+    workflow = MLExperimentWorkflow(tmp_path)
+    waiting = workflow.create()
+    approval_id = workflow.status(waiting.id).pending_approval_id
+    workflow.resolve_approval(approval_id, ApprovalDecision.ALLOW_ONCE)
+    experiment_step = workflow.store.list_steps(waiting.id)[1]
+    transition_step = workflow.store.transition_step
+
+    def crash_before_step_commit(step_id, status, event_type):
+        if step_id == experiment_step.id and status is StepStatus.SUCCEEDED:
+            raise SystemExit("injected crash after tool completion")
+        return transition_step(step_id, status, event_type)
+
+    monkeypatch.setattr(workflow.store, "transition_step", crash_before_step_commit)
+    with pytest.raises(SystemExit, match="after tool completion"):
+        workflow.resume(waiting.id)
+
+    assert workflow.store.list_tool_calls(waiting.id)[1].status is (
+        ToolCallStatus.SUCCEEDED
+    )
+    assert workflow.store.list_steps(waiting.id)[1].status is StepStatus.RUNNING
+    restarted = MLExperimentWorkflow(tmp_path)
+    completed = restarted.resume(waiting.id)
+
+    assert completed.status == RunStatus.SUCCEEDED.value
+    assert len(
+        restarted.definition(waiting.id).artifacts.effects_file.read_text().splitlines()
+    ) == 1
+
+
+def test_resume_executes_approved_call_after_crash_before_step_waiting_commit(
+    tmp_path, monkeypatch
+):
+    workflow = MLExperimentWorkflow(tmp_path)
+    transition_step = workflow.store.transition_step
+
+    def crash_before_waiting_commit(step_id, status, event_type):
+        if status is StepStatus.WAITING_APPROVAL:
+            raise SystemExit("injected crash after approval persistence")
+        return transition_step(step_id, status, event_type)
+
+    monkeypatch.setattr(workflow.store, "transition_step", crash_before_waiting_commit)
+    with pytest.raises(SystemExit, match="after approval persistence"):
+        workflow.create()
+
+    [run] = workflow.store.list_runs()
+    experiment_call = workflow.store.list_tool_calls(run.id)[1]
+    approval = workflow.store.get_approval_for_tool_call(experiment_call.id)
+    assert workflow.store.list_steps(run.id)[1].status is StepStatus.RUNNING
+    restarted = MLExperimentWorkflow(tmp_path)
+    restarted.resolve_approval(approval.id, ApprovalDecision.ALLOW_ONCE)
+
+    completed = restarted.resume(run.id)
+
+    assert completed.status == RunStatus.SUCCEEDED.value
+    assert len(
+        restarted.definition(run.id).artifacts.effects_file.read_text().splitlines()
+    ) == 1
+
+
 def test_normal_workflow_has_no_fault_plan(tmp_path):
     workflow = MLExperimentWorkflow(tmp_path)
     run = workflow.create()

@@ -44,10 +44,27 @@ class MLExperimentReportService:
         ):
             raise ValueError("Artifact Integrity Failure")
         approvals = self.store.list_approvals(run_id)
-        if len(approvals) < 1:
-            raise ValueError("report requires persisted Approval evidence")
+        experiment_call = self._succeeded_call(calls, "run_experiment")
+        experiment_step = definition.step("run_experiment")
+        matching_approvals = [
+            approval
+            for approval in approvals
+            if approval.tool_call_id == experiment_call.id
+            and approval.status.value == "approved"
+            and approval.decision is not None
+            and approval.decision.value == "allow_once"
+            and approval.attempt == experiment_call.attempt
+            and approval.workspace == run.workspace
+            and approval.experiment_id == definition.experiment_id
+            and approval.definition_hash == experiment_step.definition_hash
+        ]
+        if len(matching_approvals) != 1:
+            raise ValueError("Approval Integrity Failure")
         trace = TraceService(self.store).export_run(run_id)
-        if trace["integrity"]["missing"]:
+        if (
+            trace["integrity"]["missing"]
+            or not trace["integrity"]["sequence_contiguous"]
+        ):
             raise ValueError("Trace Integrity Failure")
         metrics = asdict(MetricsService(self.store).summarize_run(run_id))
         root = Path(__file__).resolve().parents[3]

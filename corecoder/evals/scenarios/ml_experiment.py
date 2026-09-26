@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 from corecoder.evals.models import RuntimeExecution
-from corecoder.runtime import ApprovalDecision, RunStatus
+from corecoder.runtime import (
+    ApprovalDecision,
+    RunStatus,
+    StepStatus,
+    ToolCallStatus,
+)
 from corecoder.workflows.ml_experiment import (
     MLExperimentReportService,
     MLExperimentWorkflow,
@@ -14,12 +23,13 @@ from corecoder.workflows.ml_experiment import (
 )
 
 
-class _InjectedExit(BaseException):
-    pass
-
-
-def _exit_process(code: int) -> None:
-    raise _InjectedExit(code)
+def _workflow(workspace, config) -> MLExperimentWorkflow:
+    return MLExperimentWorkflow(
+        workspace,
+        max_attempts=config.max_attempts,
+        auto_retry=config.auto_retry,
+        recovery_enabled=config.recovery_enabled,
+    )
 
 
 def _approve_experiment(workflow: MLExperimentWorkflow, run_id: str) -> None:
@@ -36,25 +46,80 @@ def _complete_normal(workflow: MLExperimentWorkflow) -> str:
     return run.id
 
 
-def _crash_environment(workspace):
-    workflow = MLExperimentWorkflow(workspace, exit_process=_exit_process)
-    try:
-        workflow.create(fault="environment_after_start")
-    except _InjectedExit:
-        pass
-    [run] = workflow.store.list_runs()
-    return workflow, run.id
+def _cli_process(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "corecoder.reliagent_cli", *arguments],
+        cwd=Path(__file__).resolve().parents[3],
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
-def _crash_experiment(workspace):
-    workflow = MLExperimentWorkflow(workspace, exit_process=_exit_process)
-    run = workflow.create(fault="experiment_after_effect")
-    _approve_experiment(workflow, run.id)
-    try:
-        workflow.resume(run.id)
-    except _InjectedExit:
-        pass
-    return workflow, run.id
+def _config_arguments(config) -> tuple[str, ...]:
+    arguments = ["--max-attempts", str(config.max_attempts)]
+    if not config.auto_retry:
+        arguments.append("--no-auto-retry")
+    if not config.recovery_enabled:
+        arguments.append("--no-recovery")
+    return tuple(arguments)
+
+
+def _crash_environment(workspace, config):
+    process = _cli_process(
+        "workflow", "ml", "start", "--workspace", str(workspace),
+        "--inject-process-loss", "environment_after_start",
+        *_config_arguments(config),
+    )
+    if process.returncode != 86:
+        raise RuntimeError(f"environment fault process returned {process.returncode}")
+    [created] = [json.loads(line) for line in process.stdout.splitlines()]
+    return _workflow(workspace, config), created["run_id"], process.returncode
+
+
+def _crash_experiment(workspace, config):
+    started = _cli_process(
+        "workflow", "ml", "start", "--workspace", str(workspace),
+        "--inject-process-loss", "experiment_after_effect",
+        *_config_arguments(config),
+    )
+    if started.returncode != 0:
+        raise RuntimeError(f"experiment setup process returned {started.returncode}")
+    created, _waiting = [json.loads(line) for line in started.stdout.splitlines()]
+    workflow = _workflow(workspace, config)
+    _approve_experiment(workflow, created["run_id"])
+    process = _cli_process(
+        "workflow", "ml", "resume", created["run_id"],
+        "--workspace", str(workspace),
+        *_config_arguments(config),
+    )
+    if process.returncode != 87:
+        raise RuntimeError(f"experiment fault process returned {process.returncode}")
+    return _workflow(workspace, config), created["run_id"], process.returncode
+
+
+def _fail_baseline_after_process_exit(
+    workflow: MLExperimentWorkflow, run_id: str, exit_code: int
+) -> None:
+    call = next(
+        call
+        for call in reversed(workflow.store.list_tool_calls(run_id))
+        if call.status.value == "running"
+    )
+    step = next(
+        step for step in workflow.store.list_steps(run_id) if step.id == call.step_id
+    )
+    error_code = f"PROCESS_EXIT_{exit_code}"
+    workflow.store.transition_tool_call(
+        call.id,
+        ToolCallStatus.FAILED,
+        "tool.failed",
+        result_summary=error_code,
+        payload={"error_code": error_code},
+    )
+    workflow.store.transition_step(step.id, StepStatus.FAILED, "step.failed")
+    workflow.store.transition_run(run_id, RunStatus.FAILED, "run.failed")
 
 
 def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
@@ -62,16 +127,16 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
     report_refused = False
     reconciliation_refused = False
     recovery_succeeded = None
+    process_exit_code = None
     fault_expected = case.fault_schedule.point in {
         "environment_after_start",
         "experiment_after_effect",
     }
     if scenario == "ml_normal_success":
-        workflow = MLExperimentWorkflow(workspace)
+        workflow = _workflow(workspace, config)
         run_id = _complete_normal(workflow)
     elif scenario == "ml_environment_recovery":
-        workflow, run_id = _crash_environment(workspace)
-        workflow = MLExperimentWorkflow(workspace)
+        workflow, run_id, process_exit_code = _crash_environment(workspace, config)
         if config.id == "full":
             workflow.resume(run_id)
             _approve_experiment(workflow, run_id)
@@ -81,16 +146,20 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
             workflow.recovery.scan(run_id=run_id)
             recovery_succeeded = False
         else:
+            _fail_baseline_after_process_exit(workflow, run_id, process_exit_code)
             recovery_succeeded = False
     elif scenario in {
         "ml_experiment_after_effect",
         "ml_valid_reconciliation",
         "ml_damaged_reconciliation",
     }:
-        workflow, run_id = _crash_experiment(workspace)
-        workflow = MLExperimentWorkflow(workspace)
+        workflow, run_id, process_exit_code = _crash_experiment(workspace, config)
+        if config.id == "baseline":
+            _fail_baseline_after_process_exit(workflow, run_id, process_exit_code)
         if config.id != "baseline":
-            blocked = workflow.resume(run_id)
+            if config.id == "no_recovery":
+                workflow.recovery.scan(run_id=run_id)
+            blocked = workflow.status(run_id) if config.id == "no_recovery" else workflow.resume(run_id)
             call_id = blocked.pending_reconciliation_tool_call_id
             if scenario == "ml_valid_reconciliation" and config.id == "full":
                 MLReconciliationService(workflow).reconcile(
@@ -115,7 +184,7 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
         else:
             recovery_succeeded = False
     elif scenario == "ml_repeated_resume":
-        workflow = MLExperimentWorkflow(workspace)
+        workflow = _workflow(workspace, config)
         run_id = _complete_normal(workflow)
         before = (
             workflow.store.list_events(run_id),
@@ -130,14 +199,14 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
             workflow.definition(run_id).artifacts.effects_file.read_bytes(),
         )
     elif scenario == "ml_approval_denial":
-        workflow = MLExperimentWorkflow(workspace)
+        workflow = _workflow(workspace, config)
         run = workflow.create()
         run_id = run.id
         call = workflow.store.list_tool_calls(run_id)[1]
         approval = workflow.store.get_approval_for_tool_call(call.id)
         workflow.resolve_approval(approval.id, ApprovalDecision.DENY)
     elif scenario == "ml_report_tamper":
-        workflow = MLExperimentWorkflow(workspace)
+        workflow = _workflow(workspace, config)
         run_id = _complete_normal(workflow)
         artifacts = workflow.definition(run_id).artifacts
         payload = json.loads(artifacts.metrics_file.read_text())
@@ -170,12 +239,12 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
             if config.id == "full"
             else RunStatus.RECOVERABLE
             if config.id == "no_recovery"
-            else RunStatus.RUNNING
+            else RunStatus.FAILED
         )
     elif scenario == "ml_valid_reconciliation" and config.id == "full":
         expected_status = RunStatus.SUCCEEDED
     elif scenario.startswith(("ml_experiment", "ml_valid", "ml_damaged")):
-        expected_status = RunStatus.RECOVERABLE if config.id != "baseline" else RunStatus.RUNNING
+        expected_status = RunStatus.RECOVERABLE if config.id != "baseline" else RunStatus.FAILED
     scenario_contract = True
     if scenario == "ml_damaged_reconciliation" and config.id == "full":
         scenario_contract = reconciliation_refused
@@ -184,12 +253,21 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
     if scenario == "ml_report_tamper":
         scenario_contract = report_refused
     assertions = {
+        "configuration_applied": (
+            workflow.policies.resolve("ml_experiment.environment_check").max_attempts
+            == config.max_attempts
+            and workflow.policies.resolve("ml_experiment.environment_check").auto_retry
+            is config.auto_retry
+            and workflow.recovery_enabled is config.recovery_enabled
+        ),
         "effect_not_duplicated": len(effects) <= 1,
         "expected_status": run.status is expected_status,
         "fault_plan_observed": fault_triggered is fault_expected,
         "runtime_invoked": bool(workflow.store.list_tool_calls(run_id)),
         "scenario_contract": scenario_contract,
     }
+    if fault_expected:
+        assertions["real_process_exit_observed"] = process_exit_code in {86, 87}
     return RuntimeExecution(
         task_succeeded=run.status is RunStatus.SUCCEEDED,
         recovery_succeeded=recovery_succeeded,
@@ -199,6 +277,7 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
             "duplicate_effects": max(0, len(effects) - 1),
             "effect_count": len(effects),
             "fault_triggered": fault_triggered,
+            "process_exit_code": process_exit_code,
         },
         assertions=assertions,
     )

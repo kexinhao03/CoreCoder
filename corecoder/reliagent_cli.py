@@ -136,10 +136,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     ml_start.add_argument("--inject-process-loss", choices=(
         "environment_after_start", "experiment_after_effect"
     ))
+    ml_start.add_argument("--max-attempts", type=int, default=2)
+    ml_start.add_argument("--no-auto-retry", action="store_true")
+    ml_start.add_argument("--no-recovery", action="store_true")
     for action in ("resume", "report"):
         action_parser = ml_actions.add_parser(action)
         action_parser.add_argument("run_id")
         action_parser.add_argument("--workspace", type=Path, required=True)
+        if action == "resume":
+            action_parser.add_argument("--max-attempts", type=int, default=2)
+            action_parser.add_argument("--no-auto-retry", action="store_true")
+            action_parser.add_argument("--no-recovery", action="store_true")
     listing = subparsers.add_parser("list")
     _add_storage_arguments(listing)
     for name in ("approve", "deny"):
@@ -168,7 +175,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     evaluation.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "workflow":
-        workflow = MLExperimentWorkflow(args.workspace)
+        workflow = MLExperimentWorkflow(
+            args.workspace,
+            max_attempts=getattr(args, "max_attempts", 2),
+            auto_retry=not getattr(args, "no_auto_retry", False),
+            recovery_enabled=not getattr(args, "no_recovery", False),
+        )
         if args.workflow_action == "start":
             def announce(run):
                 print(

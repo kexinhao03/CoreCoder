@@ -21,7 +21,14 @@ def test_ml_workflow_matrix_executes_eight_real_runtime_cases(tmp_path):
     first = {(result.case_id, result.config_id): result for result in results}
     assert first[("ML02", "full")].recovery_succeeded is True
     assert first[("ML02", "baseline")].recovery_succeeded is False
+    assert first[("ML02", "baseline")].metrics_snapshot["final_status"] == "failed"
+    assert first[("ML03", "baseline")].metrics_snapshot["final_status"] == "failed"
     assert first[("ML04", "full")].task_succeeded is True
     assert first[("ML05", "full")].task_succeeded is False
     assert first[("ML07", "full")].metrics_snapshot["final_status"] == "failed"
     assert first[("ML08", "full")].assertions["scenario_contract"] is True
+    for result in results:
+        assert result.assertions["configuration_applied"] is True
+        if result.case_id in {"ML02", "ML03", "ML04", "ML05"}:
+            assert result.effect_observations["process_exit_code"] in {86, 87}
+            assert result.assertions["real_process_exit_observed"] is True

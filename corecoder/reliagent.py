@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .runtime import (
+    ApprovalDecision,
+    ApprovalStatus,
     PendingApproval,
     RunRecord,
     RunStatus,
@@ -20,6 +22,8 @@ from .runtime import (
 class TaskStep:
     tool_name: str
     argv: tuple[str, ...]
+    approval_experiment_id: str | None = None
+    approval_definition_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,28 +137,123 @@ class ReliAgentRuntime:
             return AdapterResult(run, ())
         executed = []
         for step, task_step in zip(persisted_steps, task_steps, strict=True):
+            result = None
             if step.status is StepStatus.SUCCEEDED:
                 continue
-            if step.status is StepStatus.WAITING_APPROVAL:
-                call = self._step_call(run_id, step.id)
-                if call.status is ToolCallStatus.CANCELLED:
-                    self._store.transition_step(step.id, StepStatus.CANCELLED, "step.cancelled")
-                    return AdapterResult(
-                        self._store.transition_run(run_id, RunStatus.CANCELLED, "run.cancelled"),
-                        tuple(executed),
+            if step.status is StepStatus.RUNNING:
+                calls = [
+                    call
+                    for call in self._store.list_tool_calls(run_id)
+                    if call.step_id == step.id
+                ]
+                if calls:
+                    call = self._latest_step_call(calls)
+                    if call.status is ToolCallStatus.SUCCEEDED:
+                        self._store.transition_step(
+                            step.id, StepStatus.SUCCEEDED, "step.completed"
+                        )
+                        continue
+                    if call.status in {
+                        ToolCallStatus.FAILED,
+                        ToolCallStatus.TIMED_OUT,
+                        ToolCallStatus.CANCELLED,
+                    }:
+                        status = (
+                            StepStatus.CANCELLED
+                            if call.status is ToolCallStatus.CANCELLED
+                            else StepStatus.FAILED
+                        )
+                        self._store.transition_step(
+                            step.id, status, f"step.{status.value}"
+                        )
+                        current_run = self._store.get_run(run_id)
+                        if current_run.status is RunStatus.CANCELLED:
+                            return AdapterResult(current_run, tuple(executed))
+                        run_status = (
+                            RunStatus.CANCELLED
+                            if status is StepStatus.CANCELLED
+                            else RunStatus.FAILED
+                        )
+                        return AdapterResult(
+                            self._store.transition_run(
+                                run_id, run_status, f"run.{run_status.value}"
+                            ),
+                            tuple(executed),
+                        )
+                    if call.status is ToolCallStatus.WAITING_APPROVAL:
+                        approval = self._store.get_approval_for_tool_call(call.id)
+                        if (
+                            approval is not None
+                            and approval.status is ApprovalStatus.APPROVED
+                            and approval.decision is ApprovalDecision.ALLOW_ONCE
+                        ):
+                            result = self._executor.execute_approved_subprocess(call.id)
+                        else:
+                            return AdapterResult(
+                                self._store.get_run(run_id), tuple(executed)
+                            )
+                    else:
+                        return AdapterResult(
+                            self._store.get_run(run_id), tuple(executed)
+                        )
+            if result is None:
+                if step.status is StepStatus.WAITING_APPROVAL:
+                    call = self._step_call(run_id, step.id)
+                    if call.status is ToolCallStatus.CANCELLED:
+                        self._store.transition_step(
+                            step.id, StepStatus.CANCELLED, "step.cancelled"
+                        )
+                        return AdapterResult(
+                            self._store.transition_run(
+                                run_id, RunStatus.CANCELLED, "run.cancelled"
+                            ),
+                            tuple(executed),
+                        )
+                    self._store.transition_step(
+                        step.id, StepStatus.RUNNING, "step.resumed"
                     )
-                self._store.transition_step(step.id, StepStatus.RUNNING, "step.resumed")
-                result = self._executor.execute_approved_subprocess(call.id)
-            else:
-                self._store.transition_step(step.id, StepStatus.RUNNING, "step.started")
-                result = self._executor.submit_subprocess(
-                    run_id, task_step.tool_name, task_step.argv, step_id=step.id
-                )
+                    result = self._executor.execute_approved_subprocess(call.id)
+                elif step.status is StepStatus.RUNNING:
+                    result = self._executor.submit_subprocess(
+                        run_id,
+                        task_step.tool_name,
+                        task_step.argv,
+                        step_id=step.id,
+                        approval_experiment_id=task_step.approval_experiment_id,
+                        approval_definition_hash=task_step.approval_definition_hash,
+                    )
+                    if isinstance(result, PendingApproval):
+                        self._store.transition_step(
+                            step.id,
+                            StepStatus.WAITING_APPROVAL,
+                            "step.waiting_approval",
+                        )
+                        return AdapterResult(
+                            self._store.get_run(run_id), tuple(executed)
+                        )
+                else:
+                    self._store.transition_step(
+                        step.id, StepStatus.RUNNING, "step.started"
+                    )
+                    result = self._executor.submit_subprocess(
+                        run_id,
+                        task_step.tool_name,
+                        task_step.argv,
+                        step_id=step.id,
+                        approval_experiment_id=task_step.approval_experiment_id,
+                        approval_definition_hash=task_step.approval_definition_hash,
+                    )
             if isinstance(result, PendingApproval):
                 self._store.transition_step(
                     step.id, StepStatus.WAITING_APPROVAL, "step.waiting_approval"
                 )
                 return AdapterResult(self._store.get_run(run_id), tuple(executed))
+            current_run = self._store.get_run(run_id)
+            if current_run.status is RunStatus.CANCELLED:
+                self._store.transition_step(
+                    step.id, StepStatus.CANCELLED, "step.cancelled"
+                )
+                return AdapterResult(current_run, tuple(executed))
             if result.call.status is not ToolCallStatus.SUCCEEDED:
                 status = (
                     StepStatus.CANCELLED
@@ -181,6 +280,10 @@ class ReliAgentRuntime:
         ]
         if not calls:
             raise ValueError("waiting step must have a persisted tool call")
+        return self._latest_step_call(calls)
+
+    @staticmethod
+    def _latest_step_call(calls):
         latest_attempt = max(call.attempt for call in calls)
         latest = [call for call in calls if call.attempt == latest_attempt]
         if len(latest) != 1:

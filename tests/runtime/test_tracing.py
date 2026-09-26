@@ -3,7 +3,7 @@
 import sqlite3
 
 from corecoder.runtime.approvals import ApprovalDecision
-from corecoder.runtime.state import ExecutionKind, RiskLevel, ToolCallStatus
+from corecoder.runtime.state import ExecutionKind, RiskLevel, StepStatus, ToolCallStatus
 from corecoder.runtime.tracing import TraceService
 
 
@@ -104,4 +104,34 @@ def test_trace_exports_approval_records(running_store):
         "risk_reason": "mutates config",
         "requested_at": approval.requested_at,
         "resolved_at": None,
+        "attempt": 1,
+        "experiment_id": None,
+        "definition_hash": None,
     }]
+
+
+def test_trace_lists_missing_run_step_and_approval_lifecycle_events(running_store):
+    step = running_store.create_step("run-1", sequence=1, title="inspect")
+    running_store.transition_step(step.id, StepStatus.RUNNING, "step.started")
+    call = running_store.create_tool_call(
+        run_id="run-1", tool_name="mutate", arguments={"argv": ["mutate"]},
+        risk_level=RiskLevel.MUTATING, execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=False, idempotency_key=None, timeout_seconds=2, step_id=step.id,
+    )
+    approval = running_store.request_approval(
+        call.id, arguments_summary="mutate", workspace=".", risk_reason="mutation"
+    )
+    with sqlite3.connect(running_store.path) as connection:
+        connection.execute("UPDATE runs SET status = 'failed' WHERE id = 'run-1'")
+        connection.execute("UPDATE steps SET status = 'failed' WHERE id = ?", (step.id,))
+        connection.execute(
+            "DELETE FROM events WHERE type = 'approval.requested' AND run_id = 'run-1'"
+        )
+
+    missing = TraceService(running_store).export_run("run-1")["integrity"]["missing"]
+
+    assert {tuple(sorted(item.items())) for item in missing} >= {
+        tuple(sorted({"run_id": "run-1", "event": "run.failed"}.items())),
+        tuple(sorted({"step_id": step.id, "event": "step.failed"}.items())),
+        tuple(sorted({"approval_id": approval.id, "event": "approval.requested"}.items())),
+    }

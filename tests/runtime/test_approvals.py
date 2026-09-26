@@ -128,6 +128,9 @@ def test_request_approval_updates_run_call_and_event(running_store):
     )
 
     assert approval.status is ApprovalStatus.PENDING
+    assert approval.attempt == 1
+    assert approval.experiment_id is None
+    assert approval.definition_hash is None
     assert running_store.get_approval("approval-1") == approval
     assert running_store.get_approval_for_tool_call("call-1") == approval
     assert running_store.get_approval_for_tool_call("missing") is None

@@ -239,6 +239,30 @@ def test_cancel_preserves_process_outcome_without_retry(running_store, process_r
     assert result.output == process_result.stdout
     assert result.failure_kind is process_result.failure_kind
     assert len(runner.calls) == 1
+
+
+def test_separate_executor_observes_persisted_cancellation(running_store):
+    started = threading.Event()
+
+    class WaitForCancelRunner:
+        def run(self, spec, cancel_event):
+            started.set()
+            assert cancel_event.wait(2), "persisted cancellation was not observed"
+            return ProcessResult(
+                None, "", "", 0.1, FailureKind.CANCELLED, True
+            )
+
+    registry = ToolPolicyRegistry({"probe": probe_policy()})
+    owner = RuntimeExecutor(running_store, registry, WaitForCancelRunner())
+    external = RuntimeExecutor(SQLiteStore(running_store.path), registry)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(owner.submit_subprocess, "run-1", "probe", ("command",))
+        assert started.wait(1)
+        external.cancel_run("run-1")
+        result = future.result(timeout=3)
+
+    assert result.call.status is ToolCallStatus.CANCELLED
+    assert running_store.get_run("run-1").status is RunStatus.CANCELLED
     assert "tool.retry_scheduled" not in [e.type for e in running_store.list_events("run-1")]
 
 
@@ -681,16 +705,16 @@ def test_in_process_requires_approval_bound_to_call(running_store, decision):
 def test_in_process_cooperative_cancellation(running_store, monkeypatch, cancel_before):
     cancellation = threading.Event()
     seen = []
+    executor = RuntimeExecutor(running_store, inspect_registry())
     if cancel_before:
         cancellation.set()
-        monkeypatch.setattr("corecoder.runtime.executor.threading.Event", lambda: cancellation)
+        monkeypatch.setattr(executor, "_register_cancellation", lambda call: cancellation)
 
     def operation(arguments, cancel_event):
         seen.append(arguments)
         cancel_event.set()
         return "partial"
 
-    executor = RuntimeExecutor(running_store, inspect_registry())
     result = executor.submit_in_process(
         "run-1", "inspect", {}, operation, tool_call_id="call-1"
     )
