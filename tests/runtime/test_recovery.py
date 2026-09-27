@@ -127,6 +127,29 @@ def test_scan_distinguishes_pending_and_approved_not_started(recovery_store):
     assert snapshot(recovery_store) == before
 
 
+@pytest.mark.parametrize("status", [ToolCallStatus.CREATED, ToolCallStatus.WAITING_APPROVAL])
+def test_scan_requires_human_for_nonreplayable_not_started_call(recovery_store, status):
+    call_id = "sensitive-" + status.value
+    make_call(
+        recovery_store,
+        call_id,
+        risk=RiskLevel.MUTATING,
+        idempotent=False,
+        status=status,
+        arguments={"argv": ["probe", "--token", "original"]},
+    )
+    if status is ToolCallStatus.WAITING_APPROVAL:
+        recovery_store.resolve_approval(
+            "approval-" + call_id, ApprovalDecision.ALLOW_ONCE
+        )
+
+    candidate = RecoveryManager(recovery_store, ToolPolicyRegistry()).scan()[0]
+
+    assert candidate.call.arguments_replayable is False
+    assert candidate.kind is RecoveryKind.HUMAN_REQUIRED
+    assert candidate.reason == "sensitive_arguments_not_replayable"
+
+
 @pytest.mark.parametrize("changes", [
     {"risk": RiskLevel.MUTATING}, {"risk": RiskLevel.EXTERNAL_EFFECT},
     {"idempotent": False}, {"tool": "unknown"},

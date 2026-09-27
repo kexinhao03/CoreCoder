@@ -80,7 +80,13 @@ class RecoveryManager:
                 if not call.arguments_replayable:
                     reason = "sensitive_arguments_not_replayable"
             elif call.status is ToolCallStatus.CREATED:
-                kind, reason = RecoveryKind.HUMAN_REQUIRED, "created_not_started"
+                if call.arguments_replayable:
+                    kind, reason = RecoveryKind.HUMAN_REQUIRED, "created_not_started"
+                else:
+                    kind, reason = (
+                        RecoveryKind.HUMAN_REQUIRED,
+                        "sensitive_arguments_not_replayable",
+                    )
             else:
                 approval = self.store.get_approval_for_tool_call(call.id)
                 if run.status is RunStatus.CANCELLED:
@@ -88,7 +94,13 @@ class RecoveryManager:
                 if approval is not None and approval.status is ApprovalStatus.PENDING:
                     kind, reason = RecoveryKind.APPROVAL_PENDING, "approval_pending"
                 elif approval is not None and approval.status is ApprovalStatus.APPROVED:
-                    kind, reason = RecoveryKind.READY_TO_START, "approved_not_started"
+                    if call.arguments_replayable:
+                        kind, reason = RecoveryKind.READY_TO_START, "approved_not_started"
+                    else:
+                        kind, reason = (
+                            RecoveryKind.HUMAN_REQUIRED,
+                            "sensitive_arguments_not_replayable",
+                        )
                 else:
                     kind, reason = RecoveryKind.HUMAN_REQUIRED, "approval_missing_or_invalid"
             candidates.append(RecoveryCandidate(run, call, kind, reason))

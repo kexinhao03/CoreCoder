@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
-from collections.abc import Iterable
+import weakref
+from collections.abc import Callable, Iterable
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import ClassVar
 
 from .approvals import (
     ApprovalDecision,
@@ -50,8 +53,32 @@ _ENDED_TOOL_CALL_STATUSES = frozenset({
 class SQLiteStore:
     """Persist runtime state and its audit trail in SQLite."""
 
+    _terminal_tool_call_listeners: ClassVar[dict[Path, list[weakref.WeakMethod]]] = {}
+    _terminal_tool_call_listeners_lock: ClassVar[threading.Lock] = threading.Lock()
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+
+    def _listener_key(self) -> Path:
+        return self.path.resolve()
+
+    def register_terminal_tool_call_listener(
+        self, listener: Callable[[str], None]
+    ) -> None:
+        with self._terminal_tool_call_listeners_lock:
+            self._terminal_tool_call_listeners.setdefault(self._listener_key(), []).append(
+                weakref.WeakMethod(listener)
+            )
+
+    def _notify_terminal_tool_calls(self, call_ids: Iterable[str]) -> None:
+        call_ids = tuple(call_ids)
+        with self._terminal_tool_call_listeners_lock:
+            listeners = list(self._terminal_tool_call_listeners.get(self._listener_key(), []))
+        for listener_ref in listeners:
+            listener = listener_ref()
+            if listener is not None:
+                for call_id in call_ids:
+                    listener(call_id)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5)
@@ -1105,6 +1132,8 @@ class SQLiteStore:
             raise
         finally:
             connection.close()
+        if decision is ApprovalDecision.DENY:
+            self._notify_terminal_tool_calls([call_row["id"]])
         return self._approval_from_row(updated_row)
 
     def fail_denied_approval(
@@ -1215,6 +1244,7 @@ class SQLiteStore:
             raise
         finally:
             connection.close()
+        self._notify_terminal_tool_calls([call_row["id"]])
         return self._approval_from_row(updated_row)
 
     def get_approval(self, approval_id: str) -> ApprovalRecord:
@@ -1490,6 +1520,8 @@ class SQLiteStore:
             raise
         finally:
             connection.close()
+        if to_status is ToolCallStatus.CANCELLED:
+            self._notify_terminal_tool_calls([tool_call_id])
         return self._tool_call_from_row(updated_row)
 
     def transition_run(
@@ -1601,6 +1633,7 @@ class SQLiteStore:
             raise
         finally:
             connection.close()
+        self._notify_terminal_tool_calls([call["id"] for call in calls])
         return self.get_run(run_id)
 
     def record_event(

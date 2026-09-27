@@ -70,6 +70,12 @@ class RuntimeExecutor:
         self._active_cancellations: dict[str, tuple[str, threading.Event]] = {}
         self._cancellation_monitor_stops: dict[str, threading.Event] = {}
         self._cancellation_lock = threading.Lock()
+        self._store.register_terminal_tool_call_listener(
+            self._discard_execution_arguments
+        )
+
+    def _discard_execution_arguments(self, call_id: str) -> None:
+        self._execution_arguments.pop(call_id, None)
 
     def cancel_run(self, run_id: str) -> RunRecord:
         run = self._store.cancel_run(run_id)

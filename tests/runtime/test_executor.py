@@ -157,7 +157,7 @@ def test_cancelling_pending_sensitive_call_discards_raw_arguments(running_store)
 
 
 @pytest.mark.parametrize("deny", [True, False])
-def test_refusing_settled_approval_discards_raw_arguments(running_store, deny):
+def test_external_terminal_settlement_discards_raw_arguments_without_execution(running_store, deny):
     executor = RuntimeExecutor(running_store, ToolPolicyRegistry.with_builtin_defaults())
     executor.submit_subprocess(
         "run-1", "bash", ("probe", "--api-key", "original"),
@@ -167,8 +167,6 @@ def test_refusing_settled_approval_discards_raw_arguments(running_store, deny):
         running_store.resolve_approval("raw-approval", ApprovalDecision.DENY)
     else:
         SQLiteStore(running_store.path).cancel_run("run-1")
-    with pytest.raises(ExecutionRefused):
-        executor.execute_approved_subprocess("raw-call")
     assert executor._execution_arguments == {}
 
 
