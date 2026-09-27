@@ -19,7 +19,10 @@ _SENSITIVE_KEY_PARTS = (
 )
 _TEXT_SECRET_PATTERNS = (
     re.compile(r"(?i)\bsk-[a-z0-9_-]{16,}\b"),
-    re.compile(r"(?i)\b[a-z0-9][a-z0-9_-]*(?:secret|token|password|api[-_]key)[a-z0-9_-]*\b"),
+    re.compile(
+        r"(?i)\b(?:[a-z0-9][a-z0-9_-]+(?:secret|token|password|api[-_]key)[a-z0-9_-]*|"
+        r"(?:secret|token|password|api[-_]key)[a-z0-9_-]+)\b"
+    ),
     re.compile(r"(?i)(bearer\s+)[^\s'\"]+"),
     re.compile(r"(?i)(https?://[^\s:@/]+:)[^\s@/]+@"),
 )

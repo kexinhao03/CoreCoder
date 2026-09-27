@@ -96,3 +96,8 @@ def test_text_redaction_removes_common_credential_tokens():
     assert redact_text("failed: AUDIT_OUTPUT_SECRET sk-abcdefghijklmnopqrst") == (
         "failed: [REDACTED] [REDACTED]"
     )
+
+
+def test_text_redaction_preserves_ordinary_secret_prose():
+    text = "secret token password api key are unavailable"
+    assert redact_text(text) == text
