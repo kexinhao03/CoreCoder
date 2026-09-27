@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .state import ExecutionKind, RiskLevel, RunStatus, StepStatus, ToolCallStatus
 
@@ -29,6 +29,7 @@ class ToolCallRecord:
     retry_of: str | None
     tool_name: str
     arguments: dict
+    arguments_replayable: bool = field(default=True, kw_only=True)
     risk_level: RiskLevel
     execution_kind: ExecutionKind
     idempotent: bool

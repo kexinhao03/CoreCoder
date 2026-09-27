@@ -64,6 +64,100 @@ def test_initialize_creates_runtime_tables(tmp_path):
     assert {"runs", "tool_calls", "approvals", "events"} <= names
 
 
+def test_tool_call_raw_cells_are_redacted_and_not_replayable(store_with_run):
+    call = store_with_run.create_tool_call(
+        run_id="run-1",
+        tool_name="bash",
+        arguments={"api_key": "AUDIT_PLAINTEXT_SECRET"},
+        risk_level=RiskLevel.READ_ONLY,
+        execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=True,
+        idempotency_key="audit",
+        timeout_seconds=120,
+        tool_call_id="call-redacted",
+    )
+    store_with_run.transition_tool_call(
+        call.id, ToolCallStatus.RUNNING, "tool.started"
+    )
+    store_with_run.transition_tool_call(
+        call.id,
+        ToolCallStatus.SUCCEEDED,
+        "tool.completed",
+        "output_secret=AUDIT_OUTPUT_SECRET",
+    )
+
+    assert call.arguments_replayable is False
+    with sqlite3.connect(store_with_run.path) as connection:
+        arguments_json, result_summary, replayable = connection.execute(
+            "SELECT arguments_json, result_summary, arguments_replayable "
+            "FROM tool_calls WHERE id = ?",
+            (call.id,),
+        ).fetchone()
+    assert "AUDIT_PLAINTEXT_SECRET" not in arguments_json
+    assert "AUDIT_OUTPUT_SECRET" not in result_summary
+    assert replayable == 0
+
+
+def test_initialize_scrubs_legacy_tool_call_raw_cells(tmp_path):
+    database = tmp_path / "legacy.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY, goal TEXT NOT NULL, workflow TEXT NOT NULL,
+                status TEXT NOT NULL, workspace TEXT NOT NULL, model TEXT NOT NULL,
+                prompt_version TEXT NOT NULL, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, started_at TEXT, ended_at TEXT
+            );
+            CREATE TABLE tool_calls (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id),
+                retry_of TEXT REFERENCES tool_calls(id),
+                tool_name TEXT NOT NULL,
+                arguments_json TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                execution_kind TEXT NOT NULL,
+                idempotent INTEGER NOT NULL,
+                idempotency_key TEXT,
+                status TEXT NOT NULL,
+                attempt INTEGER NOT NULL,
+                timeout_seconds INTEGER NOT NULL,
+                result_summary TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT
+            );
+            INSERT INTO runs VALUES (
+                'legacy-run', 'goal', 'repo_maintenance', 'created', '/tmp',
+                'model', 'v1', '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00', NULL, NULL
+            );
+            INSERT INTO tool_calls VALUES (
+                'legacy-call', 'legacy-run', NULL, 'bash',
+                '{"api_key": "AUDIT_PLAINTEXT_SECRET"}', 'read_only',
+                'subprocess', 1, 'legacy', 'succeeded', 1, 120,
+                'output_secret=AUDIT_OUTPUT_SECRET',
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00', NULL, NULL
+            );
+            """
+        )
+
+    store = SQLiteStore(database)
+    store.initialize()
+
+    with sqlite3.connect(store.path) as connection:
+        arguments_json, result_summary, replayable = connection.execute(
+            "SELECT arguments_json, result_summary, arguments_replayable "
+            "FROM tool_calls WHERE id = ?",
+            ("legacy-call",),
+        ).fetchone()
+    assert "AUDIT_PLAINTEXT_SECRET" not in arguments_json
+    assert "AUDIT_OUTPUT_SECRET" not in result_summary
+    assert replayable == 0
+
+
 def test_initialize_migrates_legacy_steps_without_inventing_identity(tmp_path):
     database = tmp_path / "legacy.db"
     with sqlite3.connect(database) as connection:

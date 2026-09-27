@@ -27,7 +27,7 @@ from .models import (
 )
 from .policies import FailureKind, ToolPolicyRegistry
 from .processes import ProcessEvidence
-from .redaction import redact
+from .redaction import redact, redact_for_storage, redact_text
 from .state import (
     ExecutionKind,
     RiskLevel,
@@ -84,6 +84,7 @@ class SQLiteStore:
                     retry_of TEXT REFERENCES tool_calls(id),
                     tool_name TEXT NOT NULL,
                     arguments_json TEXT NOT NULL,
+                    arguments_replayable INTEGER NOT NULL DEFAULT 1,
                     risk_level TEXT NOT NULL,
                     execution_kind TEXT NOT NULL,
                     idempotent INTEGER NOT NULL,
@@ -196,6 +197,12 @@ class SQLiteStore:
             }
             if "step_id" not in tool_call_columns:
                 connection.execute("ALTER TABLE tool_calls ADD COLUMN step_id TEXT")
+            if "arguments_replayable" not in tool_call_columns:
+                connection.execute(
+                    "ALTER TABLE tool_calls "
+                    "ADD COLUMN arguments_replayable INTEGER NOT NULL DEFAULT 1"
+                )
+            self._scrub_legacy_tool_calls(connection)
             step_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(steps)")
@@ -222,6 +229,67 @@ class SQLiteStore:
                 ON steps(run_id, step_key) WHERE step_key IS NOT NULL
                 """
             )
+
+    @staticmethod
+    def _scrub_legacy_tool_calls(connection: sqlite3.Connection) -> None:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            rows = connection.execute(
+                """
+                SELECT id, tool_name, arguments_json, result_summary,
+                       arguments_replayable
+                FROM tool_calls
+                """
+            ).fetchall()
+            for row in rows:
+                arguments_json = row["arguments_json"]
+                try:
+                    raw_arguments = json.loads(arguments_json)
+                except json.JSONDecodeError:
+                    safe_arguments_json = redact_text(arguments_json)
+                    arguments_changed = safe_arguments_json != arguments_json
+                else:
+                    if isinstance(raw_arguments, dict):
+                        safe_arguments, _ = redact_for_storage(
+                            row["tool_name"], raw_arguments
+                        )
+                        arguments_changed = safe_arguments != raw_arguments
+                        safe_arguments_json = (
+                            json.dumps(safe_arguments, sort_keys=True)
+                            if arguments_changed
+                            else arguments_json
+                        )
+                    else:
+                        safe_arguments_json = redact_text(arguments_json)
+                        arguments_changed = safe_arguments_json != arguments_json
+                result_summary = row["result_summary"]
+                safe_result_summary = (
+                    redact_text(result_summary)
+                    if result_summary is not None
+                    else None
+                )
+                summary_changed = safe_result_summary != result_summary
+                if not arguments_changed and not summary_changed:
+                    continue
+                connection.execute(
+                    """
+                    UPDATE tool_calls
+                    SET arguments_json = ?,
+                        arguments_replayable = ?,
+                        result_summary = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        safe_arguments_json,
+                        0 if arguments_changed else row["arguments_replayable"],
+                        safe_result_summary,
+                        row["id"],
+                    ),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
     def create_run(
         self,
@@ -460,7 +528,15 @@ class SQLiteStore:
             )
         connection.execute(
             "UPDATE tool_calls SET status = ?, updated_at = ?, ended_at = ?, result_summary = ? WHERE id = ?",
-            (status.value, timestamp, timestamp, reason or call.result_summary, call.id),
+            (
+                status.value,
+                timestamp,
+                timestamp,
+                redact_text(reason or call.result_summary)
+                if reason or call.result_summary
+                else None,
+                call.id,
+            ),
         )
         payload = {"tool_call_id": call.id, "resolution": resolution}
         if created:
@@ -514,11 +590,13 @@ class SQLiteStore:
             connection.execute(
                 """
                 INSERT INTO tool_calls (
-                    id, run_id, retry_of, tool_name, arguments_json, risk_level,
-                    execution_kind, idempotent, idempotency_key, status, attempt,
-                    timeout_seconds, created_at, updated_at, step_id
-                ) SELECT ?, run_id, id, tool_name, arguments_json, risk_level,
-                    execution_kind, idempotent, idempotency_key, ?, attempt + 1,
+                    id, run_id, retry_of, tool_name, arguments_json,
+                    arguments_replayable, risk_level, execution_kind, idempotent,
+                    idempotency_key, status, attempt, timeout_seconds, created_at,
+                    updated_at, step_id
+                ) SELECT ?, run_id, id, tool_name, arguments_json,
+                    arguments_replayable, risk_level, execution_kind, idempotent,
+                    idempotency_key, ?, attempt + 1,
                     timeout_seconds, ?, ?, step_id FROM tool_calls WHERE id = ?
                 """,
                 (retry_id, ToolCallStatus.CREATED.value, timestamp, timestamp, call.id),
@@ -616,11 +694,13 @@ class SQLiteStore:
             connection.execute(
                 """
                 INSERT INTO tool_calls (
-                    id, run_id, retry_of, tool_name, arguments_json, risk_level,
-                    execution_kind, idempotent, idempotency_key, status, attempt,
-                    timeout_seconds, created_at, updated_at, step_id
-                ) SELECT ?, run_id, id, tool_name, arguments_json, risk_level,
-                    execution_kind, idempotent, idempotency_key, ?, attempt + 1,
+                    id, run_id, retry_of, tool_name, arguments_json,
+                    arguments_replayable, risk_level, execution_kind, idempotent,
+                    idempotency_key, status, attempt, timeout_seconds, created_at,
+                    updated_at, step_id
+                ) SELECT ?, run_id, id, tool_name, arguments_json,
+                    arguments_replayable, risk_level, execution_kind, idempotent,
+                    idempotency_key, ?, attempt + 1,
                     timeout_seconds, ?, ?, step_id FROM tool_calls WHERE id = ?
                 """,
                 (retry_id, ToolCallStatus.CREATED.value, timestamp, timestamp, call.id),
@@ -657,6 +737,9 @@ class SQLiteStore:
     ) -> ToolCallRecord:
         resolved_id = tool_call_id or uuid.uuid4().hex
         timestamp = datetime.now(timezone.utc).isoformat()
+        stored_arguments, arguments_replayable = redact_for_storage(
+            tool_name, arguments
+        )
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -696,6 +779,10 @@ class SQLiteStore:
                         "non-idempotent tool call cannot be auto-retried"
                     )
                 attempt = source["attempt"] + 1
+                arguments_replayable = (
+                    arguments_replayable
+                    and bool(source["arguments_replayable"])
+                )
 
             active_call = connection.execute(
                 """
@@ -718,7 +805,8 @@ class SQLiteStore:
                 run_id=run_id,
                 retry_of=retry_of,
                 tool_name=tool_name,
-                arguments=arguments,
+                arguments=stored_arguments,
+                arguments_replayable=arguments_replayable,
                 risk_level=risk_level,
                 execution_kind=execution_kind,
                 idempotent=idempotent,
@@ -736,11 +824,11 @@ class SQLiteStore:
                 """
                 INSERT INTO tool_calls (
                     id, run_id, retry_of, tool_name, arguments_json,
-                    risk_level, execution_kind, idempotent, idempotency_key,
+                    arguments_replayable, risk_level, execution_kind, idempotent, idempotency_key,
                     status, attempt, timeout_seconds, result_summary,
                     created_at, updated_at, started_at, ended_at
                     ,step_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     call.id,
@@ -748,6 +836,7 @@ class SQLiteStore:
                     call.retry_of,
                     call.tool_name,
                     json.dumps(call.arguments, sort_keys=True),
+                    int(call.arguments_replayable),
                     call.risk_level.value,
                     call.execution_kind.value,
                     int(call.idempotent),
@@ -1072,7 +1161,7 @@ class SQLiteStore:
                    updated_at = ?, ended_at = ? WHERE id = ?""",
                 (
                     ToolCallStatus.FAILED.value,
-                    error_code,
+                    redact_text(error_code),
                     timestamp,
                     timestamp,
                     call_row["id"],
@@ -1342,7 +1431,7 @@ class SQLiteStore:
             ended_at = row["ended_at"]
             if to_status in _ENDED_TOOL_CALL_STATUSES:
                 ended_at = timestamp
-            summary = result_summary[:2000] if result_summary else None
+            summary = redact_text(result_summary)[:2000] if result_summary else None
             event_payload = dict(payload or {})
             event_payload["tool_call_id"] = tool_call_id
             connection.execute(
@@ -1758,7 +1847,7 @@ class SQLiteStore:
                 """,
                 (
                     ToolCallStatus.SUCCEEDED.value,
-                    json.dumps({"reconciled": True}, sort_keys=True),
+                    redact_text(json.dumps({"reconciled": True}, sort_keys=True)),
                     timestamp,
                     timestamp,
                     call.id,
@@ -1860,12 +1949,14 @@ class SQLiteStore:
             connection.execute(
                 """
                 INSERT INTO tool_calls (
-                    id, run_id, retry_of, tool_name, arguments_json, risk_level,
-                    execution_kind, idempotent, idempotency_key, status, attempt,
-                    timeout_seconds, result_summary, created_at, updated_at,
+                    id, run_id, retry_of, tool_name, arguments_json,
+                    arguments_replayable, risk_level, execution_kind, idempotent,
+                    idempotency_key, status, attempt, timeout_seconds, result_summary,
+                    created_at, updated_at,
                     started_at, ended_at, step_id
-                ) SELECT ?, run_id, id, tool_name, arguments_json, risk_level,
-                    execution_kind, idempotent, idempotency_key, ?, attempt + 1,
+                ) SELECT ?, run_id, id, tool_name, arguments_json,
+                    arguments_replayable, risk_level, execution_kind, idempotent,
+                    idempotency_key, ?, attempt + 1,
                     timeout_seconds, NULL, ?, ?, NULL, NULL, step_id
                 FROM tool_calls WHERE id = ?
                 """,
@@ -2123,6 +2214,7 @@ class SQLiteStore:
             retry_of=row["retry_of"],
             tool_name=row["tool_name"],
             arguments=json.loads(row["arguments_json"]),
+            arguments_replayable=bool(row["arguments_replayable"]),
             risk_level=RiskLevel(row["risk_level"]),
             execution_kind=ExecutionKind(row["execution_kind"]),
             idempotent=bool(row["idempotent"]),
