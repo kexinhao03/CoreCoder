@@ -564,6 +564,7 @@ class SQLiteStore:
             if not (
                 run.status is RunStatus.RECOVERABLE
                 and call.status is ToolCallStatus.INTERRUPTED
+                and call.arguments_replayable
                 and call.risk_level is RiskLevel.READ_ONLY and call.idempotent
                 and policy.risk_level is RiskLevel.READ_ONLY and policy.idempotent
                 and policy.auto_retry and call.attempt < policy.max_attempts

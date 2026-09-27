@@ -56,6 +56,122 @@ def wait_until(predicate, timeout):
         time.sleep(0.01)
 
 
+@pytest.mark.parametrize("approved", [False, True])
+def test_active_executor_owns_raw_arguments_and_returns_raw_output(running_store, approved):
+    policy = probe_policy(
+        execution_kind=ExecutionKind.IN_PROCESS,
+        risk_level=RiskLevel.MUTATING if approved else RiskLevel.READ_ONLY,
+    )
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"inspect": policy}))
+    arguments = {"nested": {"api_key": "sk-1234567890abcdefghijkl"}}
+    received = []
+
+    def operation(args, cancellation):
+        received.append(args)
+        return args["nested"]["api_key"]
+
+    result = executor.submit_in_process(
+        "run-1", "inspect", arguments, operation,
+        tool_call_id="raw-call", approval_id="raw-approval" if approved else None,
+    )
+    if approved:
+        assert isinstance(result, PendingApproval)
+        arguments["nested"]["api_key"] = "changed after submission"
+        running_store.resolve_approval("raw-approval", ApprovalDecision.ALLOW_ONCE)
+        result = executor.execute_approved_in_process("raw-call", operation)
+    assert received == [{"nested": {"api_key": "sk-1234567890abcdefghijkl"}}]
+    assert result.output == "sk-1234567890abcdefghijkl"
+    assert result.call.arguments == {"nested": {"api_key": "[REDACTED]"}}
+    assert result.call.result_summary == "[REDACTED]"
+    assert result.call.arguments_replayable is False
+    assert executor._execution_arguments == {}
+
+
+@pytest.mark.parametrize("in_process", [True, False])
+def test_new_executor_refuses_approved_sensitive_arguments_before_start(running_store, in_process):
+    policy = probe_policy(
+        execution_kind=ExecutionKind.IN_PROCESS if in_process else ExecutionKind.SUBPROCESS,
+        risk_level=RiskLevel.MUTATING,
+    )
+    registry = ToolPolicyRegistry({"probe": policy})
+    runner = SpyRunner(success_result("must not run"))
+    executor = RuntimeExecutor(running_store, registry, runner)
+    received = []
+
+    def operation(args, cancellation):
+        received.append(args)
+        return "must not run"
+
+    if in_process:
+        executor.submit_in_process(
+            "run-1", "probe", {"api_key": "original"}, operation,
+            tool_call_id="raw-call", approval_id="raw-approval",
+        )
+    else:
+        executor.submit_subprocess(
+            "run-1", "probe", ("probe", "--api-key", "original"),
+            tool_call_id="raw-call", approval_id="raw-approval",
+        )
+    running_store.resolve_approval("raw-approval", ApprovalDecision.ALLOW_ONCE)
+    restarted = RuntimeExecutor(SQLiteStore(running_store.path), registry, runner)
+    before = running_store.list_events("run-1")
+    with pytest.raises(ExecutionRefused, match="^sensitive_arguments_not_replayable$"):
+        if in_process:
+            restarted.execute_approved_in_process("raw-call", operation)
+        else:
+            restarted.execute_approved_subprocess("raw-call")
+    assert received == runner.calls == []
+    assert running_store.list_events("run-1") == before
+    assert running_store.get_tool_call("raw-call").status is ToolCallStatus.WAITING_APPROVAL
+
+
+def test_sensitive_subprocess_retry_preserves_raw_arguments_and_cleans_lineage(running_store):
+    runner = SequenceRunner([timeout_result(), success_result("sk-1234567890abcdefghijkl")])
+    policy = probe_policy(
+        max_attempts=2, auto_retry=True,
+        retryable_failures=frozenset({FailureKind.TIMED_OUT}),
+    )
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry({"probe": policy}), runner)
+    result = executor.submit_subprocess(
+        "run-1", "probe", ("probe", "--api-key", "original"), tool_call_id="raw-call",
+    )
+    assert [spec.argv for spec in runner.calls] == [
+        ("probe", "--api-key", "original"), ("probe", "--api-key", "original"),
+    ]
+    assert result.call.attempt == 2
+    assert result.call.arguments == {"argv": ["probe", "--api-key", "[REDACTED]"]}
+    assert result.call.arguments_replayable is False
+    assert result.output == "sk-1234567890abcdefghijkl"
+    assert result.call.result_summary == "[REDACTED]"
+    assert executor._execution_arguments == {}
+
+
+def test_cancelling_pending_sensitive_call_discards_raw_arguments(running_store):
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry.with_builtin_defaults())
+    executor.submit_subprocess(
+        "run-1", "bash", ("probe", "--api-key", "original"), tool_call_id="raw-call",
+    )
+    executor.cancel_run("run-1")
+    assert running_store.get_tool_call("raw-call").status is ToolCallStatus.CANCELLED
+    assert executor._execution_arguments == {}
+
+
+@pytest.mark.parametrize("deny", [True, False])
+def test_refusing_settled_approval_discards_raw_arguments(running_store, deny):
+    executor = RuntimeExecutor(running_store, ToolPolicyRegistry.with_builtin_defaults())
+    executor.submit_subprocess(
+        "run-1", "bash", ("probe", "--api-key", "original"),
+        tool_call_id="raw-call", approval_id="raw-approval",
+    )
+    if deny:
+        running_store.resolve_approval("raw-approval", ApprovalDecision.DENY)
+    else:
+        SQLiteStore(running_store.path).cancel_run("run-1")
+    with pytest.raises(ExecutionRefused):
+        executor.execute_approved_subprocess("raw-call")
+    assert executor._execution_arguments == {}
+
+
 def test_recovery_execution_refuses_an_initial_created_call(running_store):
     runner = SpyRunner(success_result("must not run"))
     executor = RuntimeExecutor(
@@ -440,7 +556,7 @@ def test_process_result_mapping_and_safe_event_payload(
     assert result.call.status is status
     assert result.failure_kind is kind
     assert result.output == "output-secret\n[stderr]\nerror-secret"
-    assert result.call.result_summary == result.output
+    assert result.call.result_summary == "[REDACTED]\n[stderr]\n[REDACTED]"
     assert executor._active_cancellations == {}
     events = [e for e in running_store.list_events("run-1") if e.type.startswith("tool.")]
     assert events[-2].payload == {"tool_call_id": "call-1"}
@@ -585,7 +701,10 @@ def test_corrupt_persisted_argv_is_refused_before_start(running_store, arguments
         )
     before = running_store.list_events("run-1")
     with pytest.raises(ValueError, match="argv"):
-        executor.execute_approved_subprocess("call-1")
+        restarted = RuntimeExecutor(
+            SQLiteStore(running_store.path), ToolPolicyRegistry.with_builtin_defaults(), runner
+        )
+        restarted.execute_approved_subprocess("call-1")
     call = running_store.get_tool_call("call-1")
     assert call.status is ToolCallStatus.WAITING_APPROVAL
     assert call.started_at is None
@@ -669,12 +788,11 @@ def test_blocking_in_process_callable_has_no_forced_timeout(running_store):
     arguments["content"] = "replacement"
     pending.call.arguments["content"] = "replacement"
     running_store.resolve_approval("approval-1", ApprovalDecision.ALLOW_ONCE)
-    restarted = RuntimeExecutor(SQLiteStore(running_store.path), registry)
-    result = restarted.execute_approved_in_process("call-1", operation)
+    result = executor.execute_approved_in_process("call-1", operation)
     assert result.call.status is ToolCallStatus.SUCCEEDED
     assert seen == [{"path": "README.md", "content": "approved"}]
     with pytest.raises(ExecutionRefused):
-        restarted.execute_approved_in_process("call-1", operation)
+        executor.execute_approved_in_process("call-1", operation)
     assert len(seen) == 1
 
 

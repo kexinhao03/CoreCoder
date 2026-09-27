@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,6 +66,7 @@ class RuntimeExecutor:
         self._policies = policies
         self._process_runner = process_runner or ManagedProcessRunner()
         self._fault_injector = fault_injector
+        self._execution_arguments: dict[str, dict] = {}
         self._active_cancellations: dict[str, tuple[str, threading.Event]] = {}
         self._cancellation_monitor_stops: dict[str, threading.Event] = {}
         self._cancellation_lock = threading.Lock()
@@ -72,6 +74,8 @@ class RuntimeExecutor:
     def cancel_run(self, run_id: str) -> RunRecord:
         run = self._store.cancel_run(run_id)
         with self._cancellation_lock:
+            for call in self._store.list_tool_calls(run_id=run_id):
+                self._execution_arguments.pop(call.id, None)
             for active_run_id, cancellation in self._active_cancellations.values():
                 if active_run_id == run_id:
                     cancellation.set()
@@ -192,6 +196,7 @@ class RuntimeExecutor:
                 sort_keys=True,
             )
             idempotency_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        call = None
         try:
             call = self._store.create_tool_call(
                 run_id=run_id,
@@ -205,6 +210,9 @@ class RuntimeExecutor:
                 step_id=step_id,
                 tool_call_id=tool_call_id,
             )
+            with self._cancellation_lock:
+                self._require_running(run_id)
+                self._execution_arguments[call.id] = deepcopy(arguments)
             if policy.requires_approval:
                 approval = self._store.request_approval(
                     call.id,
@@ -217,6 +225,8 @@ class RuntimeExecutor:
                 )
                 return PendingApproval(self._store.get_tool_call(call.id), approval)
         except ValueError:
+            if call is not None:
+                self._execution_arguments.pop(call.id, None)
             self._require_running(run_id)
             raise
         return call
@@ -237,18 +247,39 @@ class RuntimeExecutor:
 
     def _approved_call(self, call_id: str) -> ToolCallRecord:
         approval = self._store.get_approval_for_tool_call(call_id)
+        if approval is not None:
+            call = self._store.get_tool_call(call_id)
+            if call.status not in {
+                ToolCallStatus.CREATED, ToolCallStatus.WAITING_APPROVAL, ToolCallStatus.RUNNING,
+            }:
+                self._execution_arguments.pop(call_id, None)
         if (
             approval is None
             or approval.status is not ApprovalStatus.APPROVED
             or approval.decision is not ApprovalDecision.ALLOW_ONCE
         ):
             raise ExecutionRefused("approved allow-once decision required")
-        call = self._store.get_tool_call(call_id)
         if call.status is not ToolCallStatus.WAITING_APPROVAL:
             raise ExecutionRefused("approved call is no longer waiting for execution")
         return call
 
     def _execute_in_process(
+        self, call: ToolCallRecord, operation: Callable[[dict, threading.Event], str]
+    ) -> RuntimeResult:
+        try:
+            return self._execute_in_process_once(call, operation)
+        finally:
+            self._execution_arguments.pop(call.id, None)
+
+    def _arguments_for_execution(self, call: ToolCallRecord) -> dict:
+        raw = self._execution_arguments.get(call.id)
+        if raw is not None:
+            return raw
+        if call.arguments_replayable:
+            return call.arguments
+        raise ExecutionRefused("sensitive_arguments_not_replayable")
+
+    def _execute_in_process_once(
         self, call: ToolCallRecord, operation: Callable[[dict, threading.Event], str]
     ) -> RuntimeResult:
         """Invoke synchronously; cancellation requires the callable's cooperation."""
@@ -259,6 +290,7 @@ class RuntimeExecutor:
             or policy.execution_kind is not ExecutionKind.IN_PROCESS
         ):
             raise ExecutionRefused("in-process policy required")
+        arguments = self._arguments_for_execution(call)
         call = self._start_call(call)
         cancellation = self._register_cancellation(call)
         output = ""
@@ -266,7 +298,7 @@ class RuntimeExecutor:
         try:
             if not cancellation.is_set():
                 try:
-                    output = operation(call.arguments, cancellation)
+                    output = operation(arguments, cancellation)
                 except Exception as error:  # noqa: BLE001 - persist callable failures, not BaseException
                     output = str(error)
                     failure_kind = FailureKind.EXECUTION_ERROR
@@ -290,15 +322,23 @@ class RuntimeExecutor:
 
     def _execute_subprocess(self, call: ToolCallRecord) -> RuntimeResult:
         while True:
-            result = self._execute_subprocess_once(call)
-            if not self._should_retry(result):
-                return result
-            source = result.call
+            source_id = call.id
             try:
-                call = self._store.schedule_retry(source, result.failure_kind, self._policies)
-            except ValueError:
-                self._require_running(source.run_id)
-                raise
+                result = self._execute_subprocess_once(call)
+                if not self._should_retry(result):
+                    return result
+                source = result.call
+                try:
+                    call = self._store.schedule_retry(source, result.failure_kind, self._policies)
+                except ValueError:
+                    self._require_running(source.run_id)
+                    raise
+                with self._cancellation_lock:
+                    raw = self._execution_arguments.get(source_id)
+                    if raw is not None:
+                        self._execution_arguments[call.id] = deepcopy(raw)
+            finally:
+                self._execution_arguments.pop(source_id, None)
 
     def _should_retry(self, result: RuntimeResult) -> bool:
         source = result.call
@@ -314,9 +354,10 @@ class RuntimeExecutor:
         )
 
     def _execute_subprocess_once(self, call: ToolCallRecord) -> RuntimeResult:
-        if not isinstance(call.arguments, dict) or not isinstance(call.arguments.get("argv"), list):
+        arguments = self._arguments_for_execution(call)
+        if not isinstance(arguments, dict) or not isinstance(arguments.get("argv"), list):
             raise ValueError("persisted arguments must contain an argv list")  # noqa: TRY004 - argv contract
-        argv = _validated_argv(call.arguments["argv"])
+        argv = _validated_argv(arguments["argv"])
         run = self._require_running(call.run_id)
         policy = self._policies.resolve(call.tool_name)
         if (

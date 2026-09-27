@@ -74,8 +74,11 @@ class RecoveryManager:
                     and call.risk_level is RiskLevel.READ_ONLY and call.idempotent
                     and policy.risk_level is RiskLevel.READ_ONLY and policy.idempotent
                     and policy.auto_retry and call.attempt < policy.max_attempts
+                    and call.arguments_replayable
                 )
                 kind = RecoveryKind.RETRY_ALLOWED if safe else RecoveryKind.HUMAN_REQUIRED
+                if not call.arguments_replayable:
+                    reason = "sensitive_arguments_not_replayable"
             elif call.status is ToolCallStatus.CREATED:
                 kind, reason = RecoveryKind.HUMAN_REQUIRED, "created_not_started"
             else:

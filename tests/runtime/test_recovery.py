@@ -33,12 +33,13 @@ def read_policy(**changes):
 
 
 def make_call(store, call_id, *, risk=RiskLevel.READ_ONLY, idempotent=True,
-              tool="read-probe", status=ToolCallStatus.RUNNING):
+              tool="read-probe", status=ToolCallStatus.RUNNING, arguments=None):
     run_id = "run-" + call_id
     store.create_run(goal="recover", workflow="test", workspace=store.path.parent,
                      model="test", prompt_version="v1", run_id=run_id)
     store.transition_run(run_id, RunStatus.RUNNING, "run.started")
-    store.create_tool_call(run_id=run_id, tool_name=tool, arguments={"argv": ["probe"]},
+    store.create_tool_call(run_id=run_id, tool_name=tool,
+                           arguments=arguments if arguments is not None else {"argv": ["probe"]},
                            risk_level=risk, execution_kind=ExecutionKind.SUBPROCESS,
                            idempotent=idempotent, idempotency_key="probe-key",
                            timeout_seconds=45, tool_call_id=call_id)
@@ -62,6 +63,29 @@ def retry_candidate(recovery_store):
 def snapshot(store):
     return (store.list_runs(), store.list_tool_calls(),
             [store.list_events(run.id) for run in store.list_runs()])
+
+
+def test_scan_requires_human_for_nonreplayable_read_only_orphan(recovery_store):
+    make_call(recovery_store, "sensitive", arguments={"argv": ["probe", "--token", "original"]})
+    manager = RecoveryManager(recovery_store, ToolPolicyRegistry({"read-probe": read_policy()}))
+    candidate = manager.scan()[0]
+    assert candidate.call.arguments_replayable is False
+    assert candidate.kind is RecoveryKind.HUMAN_REQUIRED
+    assert candidate.reason == "sensitive_arguments_not_replayable"
+    before = snapshot(recovery_store)
+    with pytest.raises(ValueError, match="not eligible"):
+        manager.resume_retry(candidate)
+    assert snapshot(recovery_store) == before
+
+
+def test_store_atomically_refuses_nonreplayable_recovery_retry(recovery_store):
+    make_call(recovery_store, "sensitive", arguments={"argv": ["probe", "--token", "original"]})
+    registry = ToolPolicyRegistry({"read-probe": read_policy()})
+    candidate = RecoveryManager(recovery_store, registry).scan()[0]
+    before = snapshot(recovery_store)
+    with pytest.raises(ValueError, match="recovery retry is not safe or permitted"):
+        recovery_store.resume_recovery_retry(candidate.run, candidate.call, registry)
+    assert snapshot(recovery_store) == before
 
 
 def test_scan_classifies_safe_and_high_risk_orphans(recovery_store):
