@@ -99,5 +99,5 @@ def test_text_redaction_removes_common_credential_tokens():
 
 
 def test_text_redaction_preserves_ordinary_secret_prose():
-    text = "secret token password api key are unavailable"
+    text = "secret token password api key secretive tokenized passwordless are unavailable"
     assert redact_text(text) == text
