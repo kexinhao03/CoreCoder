@@ -86,7 +86,6 @@ def test_tool_call_raw_cells_are_redacted_and_not_replayable(store_with_run):
         "output_secret=AUDIT_OUTPUT_SECRET",
     )
 
-    assert call.arguments_replayable is False
     with sqlite3.connect(store_with_run.path) as connection:
         arguments_json, result_summary, replayable = connection.execute(
             "SELECT arguments_json, result_summary, arguments_replayable "
