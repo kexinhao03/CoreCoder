@@ -10,6 +10,7 @@ import weakref
 from collections.abc import Callable, Iterable
 from contextlib import closing
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import ClassVar
 
@@ -62,13 +63,28 @@ class SQLiteStore:
     def _listener_key(self) -> Path:
         return self.path.resolve()
 
+    @classmethod
+    def _remove_terminal_tool_call_listener(
+        cls, listener_key: Path, listener_ref: weakref.WeakMethod
+    ) -> None:
+        with cls._terminal_tool_call_listeners_lock:
+            listeners = cls._terminal_tool_call_listeners.get(listener_key)
+            if listeners is None:
+                return
+            listeners.remove(listener_ref)
+            if not listeners:
+                del cls._terminal_tool_call_listeners[listener_key]
+
     def register_terminal_tool_call_listener(
         self, listener: Callable[[str], None]
     ) -> None:
+        listener_key = self._listener_key()
+        listener_ref = weakref.WeakMethod(
+            listener,
+            partial(self._remove_terminal_tool_call_listener, listener_key),
+        )
         with self._terminal_tool_call_listeners_lock:
-            self._terminal_tool_call_listeners.setdefault(self._listener_key(), []).append(
-                weakref.WeakMethod(listener)
-            )
+            self._terminal_tool_call_listeners.setdefault(listener_key, []).append(listener_ref)
 
     def _notify_terminal_tool_calls(self, call_ids: Iterable[str]) -> None:
         call_ids = tuple(call_ids)

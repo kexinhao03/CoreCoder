@@ -1,3 +1,4 @@
+import gc
 import json
 import sqlite3
 import sys
@@ -154,6 +155,18 @@ def test_cancelling_pending_sensitive_call_discards_raw_arguments(running_store)
     executor.cancel_run("run-1")
     assert running_store.get_tool_call("raw-call").status is ToolCallStatus.CANCELLED
     assert executor._execution_arguments == {}
+
+
+def test_terminal_listener_registration_is_removed_when_executor_is_collected(tmp_path):
+    store = SQLiteStore(tmp_path / "listeners.db")
+    store.initialize()
+    listener_key = store._listener_key()
+
+    for _ in range(1_000):
+        RuntimeExecutor(store, ToolPolicyRegistry.with_builtin_defaults())
+    gc.collect()
+
+    assert listener_key not in SQLiteStore._terminal_tool_call_listeners
 
 
 @pytest.mark.parametrize("deny", [True, False])
