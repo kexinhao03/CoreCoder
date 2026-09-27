@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 class Tool(ABC):
     """Minimal tool interface. Subclass this to add new capabilities."""
 
+    manages_approval: bool = False
     name: str
     description: str
     parameters: dict  # JSON Schema for the function args

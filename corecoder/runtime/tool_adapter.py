@@ -12,12 +12,13 @@ from .executor import PendingApproval, RuntimeExecutor, RuntimeResult
 from .state import StepStatus, ToolCallStatus
 from .store import SQLiteStore
 
-ApprovalHandler = Callable[[ApprovalRecord], ApprovalDecision]
+ApprovalHandler = Callable[[ApprovalRecord, dict], ApprovalDecision]
 
 
 class RuntimeToolAdapter(Tool):
     """Preserve a CoreCoder tool's schema while durably executing each call."""
 
+    manages_approval: ClassVar[bool] = True
     parameters: ClassVar[dict]
 
     def __init__(
@@ -60,7 +61,7 @@ class RuntimeToolAdapter(Tool):
             )
             if self._approval_handler is None:
                 return f"Approval required: {result.approval.id}"
-            decision = self._approval_handler(result.approval)
+            decision = self._approval_handler(result.approval, kwargs)
             self._store.resolve_approval(result.approval.id, decision)
             if decision is ApprovalDecision.DENY:
                 self._store.transition_step(

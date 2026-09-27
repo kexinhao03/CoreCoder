@@ -145,6 +145,9 @@ class Agent:
                 "read-only tools, then present the plan and stop. The user can "
                 'approve it by typing "approve", or exit plan mode with /plan.'
             )
+        tool = self._tool_by_name.get(tc.name)
+        if tool is not None and tool.manages_approval:
+            return None
         if self.permission is None:
             return None
         return self.permission.check(tc.name, tc.arguments)
