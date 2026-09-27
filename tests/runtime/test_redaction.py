@@ -1,6 +1,6 @@
 """Runtime facts never persist or return sensitive values in clear text."""
 
-from corecoder.runtime.redaction import redact
+from corecoder.runtime.redaction import redact, redact_for_storage, redact_text
 from corecoder.runtime.state import RunStatus
 
 
@@ -68,3 +68,31 @@ def test_run_transition_event_storage_never_bypasses_redaction(running_store):
     assert running_store.list_events("run-1")[-1].payload == {
         "token": "[REDACTED]"
     }
+
+
+def test_storage_redaction_marks_changed_arguments_non_replayable():
+    stored, replayable = redact_for_storage(
+        "probe",
+        {"argv": ["probe", "--api-key", "AUDIT_ARG_SECRET"]},
+    )
+    assert stored == {"argv": ["probe", "--api-key", "[REDACTED]"]}
+    assert replayable is False
+
+
+def test_write_content_is_replaced_by_hash_descriptor():
+    stored, replayable = redact_for_storage(
+        "write_file", {"file_path": "note.txt", "content": "private body"}
+    )
+    assert stored["file_path"] == "note.txt"
+    assert stored["content"] == {
+        "redacted": True,
+        "bytes": 12,
+        "sha256": "aaecb569221e2e49869a9b3e5d61280a2098fb65b08bae1198e892e8f6f00aba",
+    }
+    assert replayable is False
+
+
+def test_text_redaction_removes_common_credential_tokens():
+    assert redact_text("failed: AUDIT_OUTPUT_SECRET sk-abcdefghijklmnopqrst") == (
+        "failed: [REDACTED] [REDACTED]"
+    )

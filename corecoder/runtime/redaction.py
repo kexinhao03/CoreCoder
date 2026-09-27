@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from typing import Any
 
 _SENSITIVE_KEY_PARTS = (
@@ -17,6 +18,8 @@ _SENSITIVE_KEY_PARTS = (
     "cookie",
 )
 _TEXT_SECRET_PATTERNS = (
+    re.compile(r"(?i)\bsk-[a-z0-9_-]{16,}\b"),
+    re.compile(r"(?i)\b[a-z0-9][a-z0-9_-]*(?:secret|token|password|api[-_]key)[a-z0-9_-]*\b"),
     re.compile(r"(?i)(bearer\s+)[^\s'\"]+"),
     re.compile(r"(?i)(https?://[^\s:@/]+:)[^\s@/]+@"),
 )
@@ -51,8 +54,24 @@ def redact_text(text: str) -> str:
     """Redact common bearer tokens and URL user-info in free-form text."""
     redacted = text
     for pattern in _TEXT_SECRET_PATTERNS:
-        redacted = pattern.sub(r"\1" + _REDACTED, redacted)
+        redacted = pattern.sub(
+            lambda match: (match.group(1) if pattern.groups else "") + _REDACTED,
+            redacted,
+        )
     return redacted
+
+
+def redact_for_storage(tool_name: str, arguments: dict) -> tuple[dict, bool]:
+    """Return redacted arguments and whether they remain replayable."""
+    stored = redact(arguments)
+    if tool_name == "write_file" and isinstance(arguments.get("content"), str):
+        raw = arguments["content"].encode("utf-8")
+        stored["content"] = {
+            "redacted": True,
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    return stored, stored == arguments
 
 
 def _is_sensitive_key(key: object) -> bool:
