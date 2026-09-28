@@ -1,7 +1,9 @@
 """The production CLI builder records real Agent tool execution offline."""
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from threading import Barrier, Event, Lock
 from typing import ClassVar
 
 import pytest
@@ -87,6 +89,118 @@ def test_production_builder_records_read_and_approved_write(tmp_path):
         ).fetchone()
         assert "written through runtime" not in stored_arguments[0]
         assert stored_arguments[1] == 0
+
+
+@pytest.mark.parametrize("permission_mode,expected_prompts", [("once", 2), ("mixed", 2), ("always", 1), ("allow_all", 0)])
+def test_parallel_writes_serialize_approval_and_preserve_decisions(
+    tmp_path, monkeypatch, permission_mode, expected_prompts,
+):
+    allowed, other = tmp_path / "allowed.txt", tmp_path / "other.txt"
+    arguments = [
+        {"file_path": str(allowed), "content": "approved raw body\n"},
+        {"file_path": str(other), "content": "other raw body\n"},
+    ]
+    # Align both worker calls before the real Runtime adapter lifecycle.
+    # This controls scheduling only; Permission, adapters and persistence are real.
+    ready = Barrier(2)
+    execute = RuntimeToolAdapter.execute
+
+    def simultaneous_requests(self, **raw_arguments):
+        ready.wait(timeout=5)
+        return execute(self, **raw_arguments)
+
+    monkeypatch.setattr(RuntimeToolAdapter, "execute", simultaneous_requests)
+    state_lock = Lock()
+    overlapped = Event()
+    active = peak = 0
+    prompts = []
+
+    def ask(name, raw_arguments):
+        nonlocal active, peak
+        with state_lock:
+            prompts.append((name, raw_arguments.copy()))
+            first = len(prompts) == 1
+            active += 1
+            peak = max(peak, active)
+            if active > 1:
+                overlapped.set()
+        try:
+            if first:
+                # Keep the first prompt open while the second worker attempts
+                # approval; the timeout bounds a correctly serialized prompt.
+                overlapped.wait(timeout=1)
+            if permission_mode == "always":
+                return "always"
+            if permission_mode == "mixed" and raw_arguments["file_path"] == str(other):
+                return "deny"
+            return "once"
+        finally:
+            with state_lock:
+                active -= 1
+
+    agent, session = cli._build_agent(
+        ScriptedLLM([
+            LLMResponse(tool_calls=[
+                ToolCall(id="write-allowed", name="write_file", arguments=arguments[0]),
+                ToolCall(id="write-other", name="write_file", arguments=arguments[1]),
+            ]),
+            LLMResponse(content="Both decisions handled."),
+        ]),
+        Config(), Permission(ask=ask, allow_all=permission_mode == "allow_all"),
+        runtime_workspace=tmp_path, runtime_enabled=True,
+    )
+
+    assert agent.chat("Handle both writes.") == "Both decisions handled."
+    session.finish(RunStatus.SUCCEEDED)
+
+    assert peak == (1 if expected_prompts else 0)
+    assert len(prompts) == expected_prompts
+    assert all(name == "write_file" and raw in arguments for name, raw in prompts)
+    if expected_prompts == 2:
+        assert sorted(raw["file_path"] for _, raw in prompts) == [str(allowed), str(other)]
+    assert allowed.read_text(encoding="utf-8") == "approved raw body\n"
+    if permission_mode == "mixed":
+        assert not other.exists()
+    else:
+        assert other.read_text(encoding="utf-8") == "other raw body\n"
+    calls = session.store.list_tool_calls(session.run_id)
+    approvals = session.store.list_approvals(session.run_id)
+    assert len(calls) == len(approvals) == 2
+    expected_statuses = ["cancelled", "succeeded"] if permission_mode == "mixed" else ["succeeded", "succeeded"]
+    assert sorted(call.status.value for call in calls) == expected_statuses
+    assert sorted(step.status.value for step in session.store.list_steps(session.run_id)) == expected_statuses
+    paths = {call.id: call.arguments["file_path"] for call in calls}
+    assert {paths[a.tool_call_id]: (a.status.value, a.decision.value) for a in approvals} == {
+        str(allowed): ("approved", "allow_once"),
+        str(other): ("denied", "deny") if permission_mode == "mixed" else ("approved", "allow_once"),
+    }
+    results = {m["tool_call_id"]: m["content"] for m in agent.messages if m["role"] == "tool"}
+    assert results["write-allowed"] == f"Wrote 1 lines to {allowed}"
+    assert results["write-other"] == (
+        "Approval denied for write_file" if permission_mode == "mixed" else f"Wrote 1 lines to {other}"
+    )
+
+
+def test_read_execution_does_not_acquire_write_gate(tmp_path):
+    source = tmp_path / "source.txt"
+    source.write_text("read without write gate\n", encoding="utf-8")
+    agent, session = cli._build_agent(
+        ScriptedLLM([
+            LLMResponse(tool_calls=[ToolCall(id="read-1", name="read_file", arguments={"file_path": str(source)})]),
+            LLMResponse(content="Read completed."),
+        ]),
+        Config(), Permission(), runtime_workspace=tmp_path, runtime_enabled=True,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool, session._write_gate:
+        assert pool.submit(agent.chat, "Read the source.").result(timeout=5) == "Read completed."
+    session.finish(RunStatus.SUCCEEDED)
+
+    results = [m["content"] for m in agent.messages if m["role"] == "tool"]
+    assert len(results) == 1
+    assert "read without write gate" in results[0]
+    assert [call.status.value for call in session.store.list_tool_calls(session.run_id)] == ["succeeded"]
+    assert session.store.list_approvals(session.run_id) == []
 
 
 def test_builder_preserves_unwrapped_tools_and_tool_order(tmp_path, monkeypatch):

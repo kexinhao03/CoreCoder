@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from typing import ClassVar
 
 from corecoder.tools.base import Tool
@@ -29,17 +30,23 @@ class RuntimeToolAdapter(Tool):
         run_id: str,
         *,
         approval_handler: ApprovalHandler | None = None,
+        execution_gate: AbstractContextManager | None = None,
     ) -> None:
         self._tool = tool
         self._store = store
         self._executor = executor
         self._run_id = run_id
         self._approval_handler = approval_handler
+        self._execution_gate = execution_gate if execution_gate is not None else nullcontext()
         self.name = tool.name
         self.description = tool.description
         self.parameters = tool.parameters
 
     def execute(self, **kwargs) -> str:
+        with self._execution_gate:
+            return self._execute(**kwargs)
+
+    def _execute(self, **kwargs) -> str:
         step = self._store.create_step(
             self._run_id,
             sequence=None,

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 
 from .permissions import Permission
 from .runtime import (
@@ -26,6 +28,8 @@ class AgentRuntimeSession:
     executor: RuntimeExecutor
     run_id: str
     permission: Permission
+    # A Run admits one active ToolCall; finish each write before starting the next.
+    _write_gate: AbstractContextManager = field(default_factory=Lock, init=False, repr=False)
 
     @classmethod
     def open(cls, workspace: Path, model: str, permission: Permission) -> AgentRuntimeSession:
@@ -50,6 +54,7 @@ class AgentRuntimeSession:
             RuntimeToolAdapter(
                 tool, self.store, self.executor, self.run_id,
                 approval_handler=self._decide_approval,
+                execution_gate=self._write_gate if tool.name == "write_file" else None,
             )
             if tool.name in {"read_file", "write_file"} else tool
             for tool in tools
