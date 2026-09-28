@@ -3,6 +3,7 @@ from dataclasses import asdict
 from corecoder import evals
 from corecoder.evals.models import EvaluationCase, EvaluationConfig, FaultSchedule
 from corecoder.evals.suites.phase3 import phase3_configurations
+from corecoder.evals.suites.ml_workflow import ml_workflow_configurations
 
 
 def test_evaluation_models_are_serializable_and_keep_fault_schedule():
@@ -17,18 +18,16 @@ def test_evaluation_models_are_serializable_and_keep_fault_schedule():
     assert config.recovery_enabled is True
 
 
-def test_phase3_configurations_have_one_control_difference_per_ablation():
-    baseline, full, no_recovery = phase3_configurations()
-
-    assert [config.id for config in (baseline, full, no_recovery)] == [
-        "baseline",
-        "full",
-        "no_recovery",
-    ]
-    assert (baseline.auto_retry, baseline.recovery_enabled) == (False, False)
-    assert (full.auto_retry, full.recovery_enabled) == (True, True)
-    assert (no_recovery.auto_retry, no_recovery.recovery_enabled) == (True, False)
-    assert full.max_attempts == no_recovery.max_attempts == 3
+def test_configurations_name_disabled_controls_and_preserve_attempt_limits():
+    for configurations, attempts in (
+        (phase3_configurations(), 3),
+        (ml_workflow_configurations(), 2),
+    ):
+        assert [asdict(config) for config in configurations] == [
+            dict(id="no_retry_no_recovery", max_attempts=1, auto_retry=False, recovery_enabled=False),
+            dict(id="full", max_attempts=attempts, auto_retry=True, recovery_enabled=True),
+            dict(id="no_recovery", max_attempts=attempts, auto_retry=True, recovery_enabled=False),
+        ]
 
 
 def test_evaluation_public_api_exports_executable_harness():

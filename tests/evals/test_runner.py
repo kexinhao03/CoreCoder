@@ -26,8 +26,8 @@ def test_retry_configuration_changes_attempts_without_changing_input(tmp_path):
     results = EvaluationRunner(tmp_path, phase3_configurations()).run((case,))
     first_repetition = _by_config([result for result in results if result.repetition == 1])
 
-    assert first_repetition["baseline"].task_succeeded is False
-    assert first_repetition["baseline"].metrics_snapshot["retry_count"] == 0
+    assert first_repetition["no_retry_no_recovery"].task_succeeded is False
+    assert first_repetition["no_retry_no_recovery"].metrics_snapshot["retry_count"] == 0
     assert first_repetition["full"].task_succeeded is True
     assert first_repetition["full"].metrics_snapshot["retry_count"] == 1
     assert first_repetition["no_recovery"].task_succeeded is True
@@ -43,7 +43,7 @@ def test_recovery_ablation_diverges_after_process_loss_and_repeat_resume_is_iner
     results = EvaluationRunner(tmp_path, phase3_configurations()).run((case,))
     first_repetition = _by_config([result for result in results if result.repetition == 1])
 
-    assert first_repetition["baseline"].recovery_succeeded is False
+    assert first_repetition["no_retry_no_recovery"].recovery_succeeded is False
     assert first_repetition["no_recovery"].recovery_succeeded is False
     full = first_repetition["full"]
     assert full.recovery_succeeded is True
@@ -90,7 +90,7 @@ def test_complete_suite_executes_ninety_real_runtime_repetitions(tmp_path):
         for result in results
         if result.repetition == 1
     }
-    assert first[("E03", "baseline")].metrics_snapshot["retry_count"] == 0
+    assert first[("E03", "no_retry_no_recovery")].metrics_snapshot["retry_count"] == 0
     assert first[("E03", "full")].metrics_snapshot["retry_count"] == 2
     assert first[("E04", "full")].metrics_snapshot["timeout_count"] == 3
     assert first[("E05", "full")].metrics_snapshot["final_status"] == "cancelled"

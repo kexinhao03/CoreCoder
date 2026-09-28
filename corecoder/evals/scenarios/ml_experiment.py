@@ -12,8 +12,6 @@ from corecoder.evals.models import RuntimeExecution
 from corecoder.runtime import (
     ApprovalDecision,
     RunStatus,
-    StepStatus,
-    ToolCallStatus,
 )
 from corecoder.workflows.ml_experiment import (
     MLExperimentReportService,
@@ -99,29 +97,6 @@ def _crash_experiment(workspace, config):
     return _workflow(workspace, config), created["run_id"], process.returncode
 
 
-def _fail_baseline_after_process_exit(
-    workflow: MLExperimentWorkflow, run_id: str, exit_code: int
-) -> None:
-    call = next(
-        call
-        for call in reversed(workflow.store.list_tool_calls(run_id))
-        if call.status.value == "running"
-    )
-    step = next(
-        step for step in workflow.store.list_steps(run_id) if step.id == call.step_id
-    )
-    error_code = f"PROCESS_EXIT_{exit_code}"
-    workflow.store.transition_tool_call(
-        call.id,
-        ToolCallStatus.FAILED,
-        "tool.failed",
-        result_summary=error_code,
-        payload={"error_code": error_code},
-    )
-    workflow.store.transition_step(step.id, StepStatus.FAILED, "step.failed")
-    workflow.store.transition_run(run_id, RunStatus.FAILED, "run.failed")
-
-
 def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
     scenario = case.scenario
     report_refused = False
@@ -137,16 +112,13 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
         run_id = _complete_normal(workflow)
     elif scenario == "ml_environment_recovery":
         workflow, run_id, process_exit_code = _crash_environment(workspace, config)
+        workflow.recovery.scan(run_id=run_id)
         if config.id == "full":
             workflow.resume(run_id)
             _approve_experiment(workflow, run_id)
             workflow.resume(run_id)
             recovery_succeeded = True
-        elif config.id == "no_recovery":
-            workflow.recovery.scan(run_id=run_id)
-            recovery_succeeded = False
         else:
-            _fail_baseline_after_process_exit(workflow, run_id, process_exit_code)
             recovery_succeeded = False
     elif scenario in {
         "ml_experiment_after_effect",
@@ -154,20 +126,17 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
         "ml_damaged_reconciliation",
     }:
         workflow, run_id, process_exit_code = _crash_experiment(workspace, config)
-        if config.id == "baseline":
-            _fail_baseline_after_process_exit(workflow, run_id, process_exit_code)
-        if config.id != "baseline":
-            if config.id == "no_recovery":
-                workflow.recovery.scan(run_id=run_id)
-            blocked = workflow.status(run_id) if config.id == "no_recovery" else workflow.resume(run_id)
+        workflow.recovery.scan(run_id=run_id)
+        if config.id == "full":
+            blocked = workflow.resume(run_id)
             call_id = blocked.pending_reconciliation_tool_call_id
-            if scenario == "ml_valid_reconciliation" and config.id == "full":
+            if scenario == "ml_valid_reconciliation":
                 MLReconciliationService(workflow).reconcile(
                     call_id, ReconciliationDecision.COMPLETED
                 )
                 workflow.resume(run_id)
                 recovery_succeeded = True
-            elif scenario == "ml_damaged_reconciliation" and config.id == "full":
+            elif scenario == "ml_damaged_reconciliation":
                 artifacts = workflow.definition(run_id).artifacts
                 payload = json.loads(artifacts.metrics_file.read_text())
                 payload["parameters"]["slope"] = 999.0
@@ -219,7 +188,7 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
     else:
         raise ValueError(f"unknown ML evaluation scenario: {scenario}")
 
-    run = workflow.store.get_run(run_id)
+    status = workflow.status(run_id)
     artifacts = workflow.definition(run_id).artifacts
     effects = (
         artifacts.effects_file.read_text().splitlines()
@@ -238,13 +207,11 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
             RunStatus.SUCCEEDED
             if config.id == "full"
             else RunStatus.RECOVERABLE
-            if config.id == "no_recovery"
-            else RunStatus.FAILED
         )
     elif scenario == "ml_valid_reconciliation" and config.id == "full":
         expected_status = RunStatus.SUCCEEDED
     elif scenario.startswith(("ml_experiment", "ml_valid", "ml_damaged")):
-        expected_status = RunStatus.RECOVERABLE if config.id != "baseline" else RunStatus.FAILED
+        expected_status = RunStatus.RECOVERABLE
     scenario_contract = True
     if scenario == "ml_damaged_reconciliation" and config.id == "full":
         scenario_contract = reconciliation_refused
@@ -261,7 +228,7 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
             and workflow.recovery_enabled is config.recovery_enabled
         ),
         "effect_not_duplicated": len(effects) <= 1,
-        "expected_status": run.status is expected_status,
+        "expected_status": status.status == expected_status.value,
         "fault_plan_observed": fault_triggered is fault_expected,
         "runtime_invoked": bool(workflow.store.list_tool_calls(run_id)),
         "scenario_contract": scenario_contract,
@@ -269,7 +236,7 @@ def execute_ml_scenario(case, config, workspace) -> RuntimeExecution:
     if fault_expected:
         assertions["real_process_exit_observed"] = process_exit_code in {86, 87}
     return RuntimeExecution(
-        task_succeeded=run.status is RunStatus.SUCCEEDED,
+        task_succeeded=status.status == RunStatus.SUCCEEDED.value,
         recovery_succeeded=recovery_succeeded,
         store=workflow.store,
         run_id=run_id,

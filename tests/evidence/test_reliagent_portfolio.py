@@ -8,21 +8,23 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EVIDENCE = ROOT / "evidence" / "reliagent" / "c724f8a"
-EVALUATED_COMMIT = "c724f8a4bc45c8ad900040f46fd306d78039279a"
+LEGACY_EVIDENCE = ROOT / "evidence" / "reliagent" / "c724f8a"
+LEGACY_EVALUATED_COMMIT = "c724f8a4bc45c8ad900040f46fd306d78039279a"
 
 
-def test_checked_in_evidence_reproduces_portfolio_claims():
-    manifest = json.loads((EVIDENCE / "manifest.json").read_text(encoding="utf-8"))
+def test_legacy_evidence_snapshot_retains_integrity_and_historical_results():
+    # This immutable snapshot predates honest ablation ids and orphan discovery;
+    # current behavior is exercised by tests/evals, not claimed from this archive.
+    manifest = json.loads((LEGACY_EVIDENCE / "manifest.json").read_text(encoding="utf-8"))
 
     assert manifest["schema_version"] == "reliagent.evidence.v1"
-    assert manifest["evaluated_commit"] == EVALUATED_COMMIT
+    assert manifest["evaluated_commit"] == LEGACY_EVALUATED_COMMIT
     for filename, expected_sha256 in manifest["sha256"].items():
-        payload = (EVIDENCE / filename).read_bytes()
+        payload = (LEGACY_EVIDENCE / filename).read_bytes()
         assert hashlib.sha256(payload).hexdigest() == expected_sha256
 
-    ml = json.loads((EVIDENCE / "ml-workflow-results.json").read_text(encoding="utf-8"))
-    phase3 = json.loads((EVIDENCE / "phase3-results.json").read_text(encoding="utf-8"))
+    ml = json.loads((LEGACY_EVIDENCE / "ml-workflow-results.json").read_text(encoding="utf-8"))
+    phase3 = json.loads((LEGACY_EVIDENCE / "phase3-results.json").read_text(encoding="utf-8"))
     ml_results = ml["results"]
     phase3_results = phase3["results"]
 

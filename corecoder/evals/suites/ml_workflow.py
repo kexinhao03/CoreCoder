@@ -16,7 +16,7 @@ _CASES = (
 
 def ml_workflow_configurations() -> tuple[EvaluationConfig, ...]:
     return (
-        EvaluationConfig("baseline", 1, False, False),
+        EvaluationConfig("no_retry_no_recovery", 1, False, False),
         EvaluationConfig("full", 2, True, True),
         EvaluationConfig("no_recovery", 2, True, False),
     )

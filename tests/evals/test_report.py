@@ -61,9 +61,9 @@ def test_report_counts_evaluation_errors_in_rate_denominators(tmp_path):
 
     raw_path = write_raw_result([failed, *results[1:]], tmp_path)
     raw = json.loads(raw_path.read_text(encoding="utf-8"))
-    baseline = raw["summary"]["by_configuration"]["baseline"]
+    ablation = raw["summary"]["by_configuration"]["no_retry_no_recovery"]
 
-    assert baseline["task_success_rate"] == 2 / 3
-    assert baseline["trace_complete_rate"] == 2 / 3
-    assert baseline["error_count"] == 1
-    assert baseline["duplicate_side_effect_rate"] is None
+    assert ablation["task_success_rate"] == 2 / 3
+    assert ablation["trace_complete_rate"] == 2 / 3
+    assert ablation["error_count"] == 1
+    assert ablation["duplicate_side_effect_rate"] is None

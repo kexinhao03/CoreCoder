@@ -18,7 +18,7 @@ _CASES = (
 
 def phase3_configurations() -> tuple[EvaluationConfig, ...]:
     return (
-        EvaluationConfig("baseline", 1, False, False),
+        EvaluationConfig("no_retry_no_recovery", 1, False, False),
         EvaluationConfig("full", 3, True, True),
         EvaluationConfig("no_recovery", 3, True, False),
     )
