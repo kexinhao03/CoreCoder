@@ -1,36 +1,38 @@
 # ReliAgent Architecture and State Machines
 
-The evaluated Runtime snapshot is commit
-`c724f8a4bc45c8ad900040f46fd306d78039279a`. The diagrams describe that
-snapshot; the evidence bundle that cites it lives under
-`evidence/reliagent/c724f8a/`.
+## Current P0 delivery boundary
 
-## Runtime architecture
+ReliAgent is a reliability Runtime layered onto the CoreCoder fork. Its source
+of truth is the SQLite store, which persists Run, Step, ToolCall, Approval, and
+Event facts. The default CoreCoder Agent path is deliberately narrow: only
+`read_file` and `write_file` are wrapped by `RuntimeToolAdapter`. The other
+Agent tools do not yet enter this Runtime boundary.
 
 ```mermaid
 flowchart LR
-    User[CLI or CoreCoder Agent] --> Adapter[RuntimeToolAdapter / Workflow]
-    Adapter --> Executor[RuntimeExecutor]
-    Executor --> Policy[ToolPolicyRegistry]
-    Executor --> Approval[Approval gate]
-    Executor --> Process[ManagedProcessRunner]
-    Executor --> Store[(SQLiteStore)]
-    Approval --> Store
-    Process -->|result and process evidence| Executor
-    Store --> Recovery[RecoveryManager]
-    Recovery -->|safe retry or human reconciliation| Executor
-    Store --> Trace[TraceService]
-    Store --> Metrics[MetricsService]
-    Eval[EvaluationRunner] -->|same public Workflow API| Adapter
-    Trace --> Evidence[Raw JSON and Markdown]
-    Metrics --> Evidence
+    A[CoreCoder Agent] --> T[RuntimeToolAdapter: read_file / write_file only]
+    C[reliagent fixed-workflow CLI] --> E[RuntimeExecutor]
+    T --> E
+    E --> P[Policy and approval]
+    E --> M[Managed process runner]
+    E --> S[(SQLiteStore: Run / Step / ToolCall / Approval / Event)]
+    S --> R[RecoveryManager]
+    R -->|safe retry or human reconciliation| E
 ```
 
-The Store is the fact source. The Runtime commits `tool.started` before a
-subprocess is launched and records a terminal observation afterward. Approval
-is bound to one ToolCall attempt, stored arguments, workspace, experiment ID,
-and workflow definition hash. Recovery classifies persisted orphans; it does
-not replay an uncertain external effect automatically.
+The Runtime records `tool.started` before subprocess launch and a terminal
+observation afterward. An approval is bound to one ToolCall attempt and its
+stored arguments. Recovery classifies persisted orphans and does not replay an
+uncertain external effect automatically.
+
+## Comparison and deferred work
+
+Evaluation compares three internal Runtime configurations:
+`no_retry_no_recovery`, `full`, and `no_recovery`. It is not an external
+baseline comparison. The current P0 scope provides one fixed local workflow;
+a second workflow, an external baseline, and P1 Metrics/Trace provenance are
+deferred. Do not represent this document as evidence that strict-v2 is
+complete.
 
 ## Run state machine
 
@@ -43,54 +45,27 @@ stateDiagram-v2
     waiting_approval --> running: allow_once
     waiting_approval --> failed: deny
     running --> recoverable: process lost / effect uncertain
-    waiting_approval --> recoverable: owner lost
     recoverable --> running: safe retry / completed reconciliation
     recoverable --> waiting_approval: retry needs fresh approval
-    running --> paused
-    paused --> running
     running --> succeeded
     running --> failed
     running --> cancelled
-    recoverable --> failed
-    recoverable --> cancelled
 ```
 
-## ToolCall lineage and effect boundary
+## Claim boundaries
 
-```mermaid
-sequenceDiagram
-    participant A as Agent / Workflow
-    participant R as RuntimeExecutor
-    participant S as SQLiteStore
-    participant P as Subprocess
-    participant H as Human
+- SQLite transactions make related Runtime facts atomic, but cannot include an
+  external side effect in the same transaction.
+- A local fixture artifact and Effect Marker can show that fixture was not
+  replayed in its tested scenario; this is not a general exactly-once guarantee.
+- Cancellation closes admission before signalling work, but cannot roll back an
+  already-observed side effect.
+- Runtime token and cost remain unavailable because Run-scoped LLM telemetry is
+  not persisted.
 
-    A->>R: submit run_experiment
-    R->>S: ToolCall attempt 1 + Approval
-    S-->>A: waiting_approval
-    H->>S: allow_once for attempt 1
-    A->>R: execute approved attempt
-    R->>S: tool.started
-    R->>P: spawn fixture
-    P-->>R: artifact and effect marker completed
-    R->>S: process evidence
-    Note over R,S: injected process loss before tool.completed
-    A->>S: startup recovery scan
-    S-->>H: recoverable / human_required
-    H->>S: reconcile completed from artifact evidence
-    S->>S: tool.reconciled + step.completed + run.resumed
-    Note over P,S: no second experiment process; marker count remains 1
-```
+## Legacy evidence
 
-## Transaction and claim boundaries
-
-- SQLite transactions make related Runtime facts atomic, but SQLite and an
-  external side effect cannot share one transaction.
-- A confirmed artifact plus Effect Marker can prove that the deterministic
-  fixture was not replayed in the tested scenario. It does not prove general
-  exactly-once execution for arbitrary tools or services.
-- Cancellation closes admission before signalling active work. If a process
-  naturally completes in the cancellation race, the ToolCall keeps the
-  observed success while the owning Step and Run remain cancelled.
-- Runtime token and cost remain unavailable because Run-scoped LLM telemetry
-  is not persisted.
+`evidence/reliagent/c724f8a/` and commit
+`c724f8a4bc45c8ad900040f46fd306d78039279a` are legacy, superseded snapshot
+material. They remain available for historical inspection, not as a statement
+that the current source or delivery boundary is identical.

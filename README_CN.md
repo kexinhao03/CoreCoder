@@ -1,21 +1,39 @@
 <div align="center">
 
-# CoreCoder
+# ReliAgent — CoreCoder 的可靠性运行时 Fork
 
-**编程 agent 里的 nanoGPT。1.2k 行引擎、整包 8666 行可读的纯 Python，读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
+**在 CoreCoder 可读 coding-agent 基线之上，加入受边界约束、由 SQLite 支撑的可靠性 Runtime 的 Fork。**
 
-*learn from it · fork it · ship something better*
+*fork 基线 · 检查 Runtime · 只按证据扩展*
 
 中文 | [English](README.md) | [配套源码导读 · 八篇双语](article/)
 
 [![PyPI](https://img.shields.io/pypi/v/corecoder)](https://pypi.org/project/corecoder/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://github.com/he-yufeng/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/CoreCoder/actions)
-[![engine](https://img.shields.io/badge/engine-1171_LoC-blue)](article/)
+[![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions)
+[![engine](https://img.shields.io/badge/engine-1175_LoC-blue)](article/)
 [![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](article/)
 
 </div>
+
+此维护 Fork 由 [kexinhao03](https://github.com/kexinhao03) 负责，仓库为
+[kexinhao03/CoreCoder](https://github.com/kexinhao03/CoreCoder)。它保留
+[he-yufeng/CoreCoder](https://github.com/he-yufeng/CoreCoder) 的上游基线，并明确归功于原作者
+[Yufeng He](https://github.com/he-yufeng)。原始源码导读和演示素材仍属于上游作品，链接有意继续指向该来源。
+
+## 上游与贡献边界
+
+| 范围 | 交付边界与事实来源 |
+| --- | --- |
+| 上游基线 | CoreCoder 原始 Agent、文章与素材持续归因于 [he-yufeng/CoreCoder](https://github.com/he-yufeng/CoreCoder)。 |
+| Runtime | 此 Fork 加入 Runtime；默认 Agent 路径只将 `read_file` 和 `write_file` 包装进 Runtime，其他 Agent 工具尚未 Runtime 化。 |
+| Recovery CLI | `reliagent` CLI 暴露固定 workflow 的恢复与对账，并非交互式 Agent 的恢复入口。 |
+| 评测 | 结果比较三个 **Runtime 配置**：`no_retry_no_recovery`、`full`、`no_recovery`，并非外部 baseline。 |
+| ML workflow | 当前只有一个确定性本地 workflow；第二个 workflow 尚未实现。 |
+| 证据目录 | `evidence/reliagent/c724f8a/` 是 legacy、已 superseded 的快照，不能证明当前源码已完成 strict-v2。P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
+
+请在此 Fork 提交问题与变更：[kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues)。
 
 - **读得完。** 一个下午读完整个引擎，没有一处藏着你看不懂的魔法。
 - **改得动。** 每一行都能在你自己机器上下断点、改了再跑。它真能干活，所以这份参考是活的，不是示意图。
@@ -25,7 +43,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1171 行 / 整包 8666 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 1175 行 / 整包 8962 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -36,7 +54,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1171 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 63 个文件、物理 9720 行、净 8666 行。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
+引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1175 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 64 个文件、物理 10036 行、净 8962 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
 
 它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；默认有 467 个测试通过，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
@@ -56,7 +74,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 读源码之前，先让它在你机器上活一次，建立点体感。它是个拿来 fork 的地基，所以推荐直接 clone 下来、可编辑安装，边读边改：
 
 ```bash
-git clone https://github.com/he-yufeng/CoreCoder
+git clone https://github.com/kexinhao03/CoreCoder
 cd CoreCoder
 pip install -e .
 ```
@@ -87,15 +105,15 @@ corecoder -p "给 parse_config() 加错误处理"   # 一次性模式，干完�
 
 ```
 corecoder/
-├── agent.py        agent 主循环 + 并行工具执行       213 行   ← 从这里开始读
+├── agent.py        agent 主循环 + 并行工具执行       216 行   ← 从这里开始读
 ├── llm.py          流式客户端 + 重试 + 成本统计       267 行
-├── context.py      三层上下文压缩                     221 行
+├── context.py      三层上下文压缩                     220 行
 ├── session.py      会话存盘 / 续聊 + 路径穿越防护      97 行
 ├── permissions.py  改动类工具的用户授权                48 行
 ├── hooks.py        工具调用前后的用户 shell 钩子        85 行
 ├── mcp.py          MCP stdio 客户端，接外部工具       208 行
 ├── prompt.py       系统提示词                          41 行
-├── cli.py          REPL + 斜杠命令 + 一次性模式        346 行
+├── cli.py          REPL + 斜杠命令 + 一次性模式        381 行
 ├── config.py       环境变量配置                        55 行
 └── tools/
     ├── bash.py       shell + 危险命令闸 + cd 追踪      134 行
@@ -106,7 +124,7 @@ corecoder/
     ├── write.py      文件写入                           43 行
     ├── todo.py       agent 自维护的任务清单             79 行
     ├── agent.py      子 agent 派生                      64 行
-    └── base.py       工具基类                           27 行
+    └── base.py       工具基类                           28 行
 examples/
 └── plan_hooks_demo.py  离线 plan mode + hooks 演示（免 API key）
 ```
@@ -162,7 +180,7 @@ def chat(self, user_input):
 读懂之后，最自然的下一步就是 fork。起手不用伤筋动骨：
 
 - **换个你常用的模型。** 就是上面那两个环境变量，`llm.py`（267 行）是所有 provider 适配的入口。
-- **加一件你自己的工具。** 照 `tools/base.py`（27 行）的工具基类写个新文件，跑测试、抓网页、调 LSP 都行，第二篇文章末尾手把手带你写第一个。
+- **加一件你自己的工具。** 照 `tools/base.py`（28 行）的工具基类写个新文件，跑测试、抓网页、调 LSP 都行，第二篇文章末尾手把手带你写第一个。
 - **改系统提示词。** `prompt.py` 才 41 行，改一句就能看到 agent 的脾气变了，是门槛最低的「改一处就有反馈」。
 - **直接当库 import。** 顶层导出了 `Agent`、`LLM`、`Config`，能嵌进你自己的程序：
 
@@ -264,9 +282,9 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 ## ReliAgent Runtime 与确定性机器学习 Workflow
 
-`corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。Agent 循环现已通过 `RuntimeToolAdapter` 接入内建 `read_file` 和需要审批的 `write_file`；独立的 `reliagent` CLI 可执行固定 JSON workflow，并提供 `list`、`approve`、`deny`、`resume`、`reconcile`、`cancel`。其他 Agent 工具尚未迁移。
+`corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。默认 Agent 循环只通过 `RuntimeToolAdapter` 接入内建 `read_file` 和需要审批的 `write_file`；独立的 `reliagent` CLI 负责固定 workflow 的恢复与对账。其他 Agent 工具尚未 Runtime 化。
 
-机器学习实验是建立在同一个 RuntimeExecutor 上的非 Coding 路径：检查固定本地数据集，在外部效果实验前等待审批，执行确定性普通最小二乘，提取持久化 JSON 指标，验证唯一 Effect Marker，再生成 Raw JSON 和 Markdown 报告。全过程不使用网络服务，也不增加依赖。
+机器学习实验是建立在同一个 RuntimeExecutor 上的唯一确定性本地 workflow：检查固定本地数据集，在外部效果实验前等待审批，执行确定性普通最小二乘，验证唯一 Effect Marker，再生成报告。全过程不使用网络服务，也不增加依赖；第二个 workflow 仍 deferred。
 
 求职展示可以直接运行这份 [3—5 分钟 Demo](docs/reliagent/demo.md)：
 
@@ -274,9 +292,9 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 sh scripts/reliagent_ml_demo.sh
 ```
 
-[架构图与状态机](docs/reliagent/architecture.md)、[简历表述证据映射](docs/reliagent/resume-evidence.md)，以及仓库内的
-[Raw JSON 与 Markdown 证据包](evidence/reliagent/c724f8a/) 都固定指向被评测的 Runtime Commit
-`c724f8a4bc45c8ad900040f46fd306d78039279a`。Manifest 保存了每个生成报告的 SHA-256。
+[架构图与状态机](docs/reliagent/architecture.md) 与[简历表述边界](docs/reliagent/resume-evidence.md)说明当前范围。仓库内的
+[Raw JSON 与 Markdown 证据包](evidence/reliagent/c724f8a/) 指向 legacy、已 superseded 的 Runtime Commit
+`c724f8a4bc45c8ad900040f46fd306d78039279a`；它是历史材料，不能证明当前源码完成 strict-v2。P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred。
 
 ```mermaid
 flowchart LR
@@ -328,23 +346,23 @@ reliagent workflow ml report <run_id> --workspace "$WORKSPACE"
 
 - 进程终止未知时，同一事务把调用标为 interrupted，把 running/waiting Run 标为 recoverable，核对前阻止新的执行。普通重试的预留、调度和创建事件也一起提交。启动扫描还会把未启动的 CREATED 预留报告为 `human_required` / `created_not_started`，只有显式 `ABANDON` 才释放预留，随后可提交新请求。扫描不会执行或自动重新排队，放弃也不声称成功或失败。
 
-Event 保留每个 Run 内的序号和 ToolCall 标识。Trace 导出和派生指标现已接入可执行的确定性 Evaluation Harness；Agent 循环仍只接入两个工具，恢复入口位于固定 workflow CLI，而不是交互式 CoreCoder CLI。由于尚未持久化 Run 级 LLM telemetry，Runtime token/cost 仍明确标为不可用。
+Event 保留每个 Run 内的序号和 ToolCall 标识。Agent 循环仍只接入两个工具，恢复入口位于固定 workflow CLI，而不是交互式 CoreCoder CLI。P1 Metrics/Trace provenance 仍 deferred；由于尚未持久化 Run 级 LLM telemetry，Runtime token/cost 仍明确标为不可用。
 
-以下命令会用完全相同的输入，在 Baseline、Full、No-recovery 三种配置下运行固定十个场景，每个重复三次：
+以下固定矩阵材料只记录 legacy snapshot；其中三种配置是 `no_retry_no_recovery`、`full`、`no_recovery`，不是 external baseline：
 
 ```bash
 reliagent eval phase3 --output /tmp/reliagent-eval
 ```
 
-90 次运行每次都会调用 `RuntimeExecutor`，并持久化 Run、Step、ToolCall、Event、Trace 和指标证据。“90 / 90”表示场景契约断言全部通过，不表示所有故障任务都成功。当前确定性运行中，Baseline、Full、No-recovery 的任务成功率分别为 10%、40%、20%；在四个恢复场景上的恢复成功率分别为 0%、50%、0%。三个包含外部效果的场景均记录到零重复副作用。这不是生产环境可靠性基准，也不是通用 exactly-once 保证。三种配置的 Trace 完整率均为 100%；高风险未知结果仍保持 `recoverable`，直到人工显式 reconcile。
+Legacy Raw JSON 记录的是场景契约，不等同于通用任务成功。这不是生产环境可靠性基准、通用 exactly-once 保证或当前 P1 Metrics/Trace provenance 的声明。
 
-Workflow 专用矩阵用同一输入在三种配置下各运行八个场景：
+Legacy workflow 专用矩阵曾用同一输入在三种配置下各运行八个场景：
 
 ```bash
 reliagent eval ml_workflow --output /tmp/reliagent-ml-eval
 ```
 
-当前确定性结果为 24 / 24 场景契约通过、零重复副作用，三种配置的 Trace 完整率均为 100%。Baseline、Full、No-recovery 的任务成功率分别为 37.5%、62.5%、37.5%；Full 恢复成功率为 50%，因为结果未决和产物损坏场景会按设计保持阻断。这些百分比只描述固定本地场景，可由生成的 Raw JSON 复现。
+其中的数字只描述固定本地场景，属于已 superseded 的历史证据；它们不证明第二个 workflow、external baseline、strict-v2 完成或当前 Trace/Metric provenance。
 
 ## 相关项目
 
