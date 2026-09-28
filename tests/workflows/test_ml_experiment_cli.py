@@ -151,7 +151,7 @@ def test_ml_cli_evaluation_writes_twenty_four_real_results(tmp_path, capsys):
     raw = json.loads(Path(result["raw_json"]).read_text())
     assert len(raw["results"]) == 24
     assert {item["config_id"] for item in raw["results"]} == {
-        "baseline",
+        "no_retry_no_recovery",
         "full",
         "no_recovery",
     }
