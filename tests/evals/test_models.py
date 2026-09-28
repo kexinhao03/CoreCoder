@@ -2,8 +2,8 @@ from dataclasses import asdict
 
 from corecoder import evals
 from corecoder.evals.models import EvaluationCase, EvaluationConfig, FaultSchedule
-from corecoder.evals.suites.phase3 import phase3_configurations
 from corecoder.evals.suites.ml_workflow import ml_workflow_configurations
+from corecoder.evals.suites.phase3 import phase3_configurations
 
 
 def test_evaluation_models_are_serializable_and_keep_fault_schedule():
@@ -24,9 +24,24 @@ def test_configurations_name_disabled_controls_and_preserve_attempt_limits():
         (ml_workflow_configurations(), 2),
     ):
         assert [asdict(config) for config in configurations] == [
-            dict(id="no_retry_no_recovery", max_attempts=1, auto_retry=False, recovery_enabled=False),
-            dict(id="full", max_attempts=attempts, auto_retry=True, recovery_enabled=True),
-            dict(id="no_recovery", max_attempts=attempts, auto_retry=True, recovery_enabled=False),
+            {
+                "id": "no_retry_no_recovery",
+                "max_attempts": 1,
+                "auto_retry": False,
+                "recovery_enabled": False,
+            },
+            {
+                "id": "full",
+                "max_attempts": attempts,
+                "auto_retry": True,
+                "recovery_enabled": True,
+            },
+            {
+                "id": "no_recovery",
+                "max_attempts": attempts,
+                "auto_retry": True,
+                "recovery_enabled": False,
+            },
         ]
 
 

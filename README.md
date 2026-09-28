@@ -8,7 +8,7 @@
 
 [中文](README_CN.md) | English | [Source-reading series · 8 bilingual essays](article/00-index_EN.md)
 
-[![PyPI](https://img.shields.io/pypi/v/corecoder)](https://pypi.org/project/corecoder/)
+[![PyPI: upstream CoreCoder](https://img.shields.io/pypi/v/corecoder?label=PyPI%20upstream%20CoreCoder)](https://pypi.org/project/corecoder/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions)
@@ -81,8 +81,6 @@ cd CoreCoder
 pip install -e .
 ```
 
-If you just want to get it running first, `pip install corecoder` works too.
-
 Give it a model and a key and it goes. It speaks the OpenAI-compatible API by default, and switching providers is usually just two environment variables:
 
 | Provider | Example env vars |
@@ -92,7 +90,7 @@ Give it a model and a key and it goes. It speaks the OpenAI-compatible API by de
 | OmniRoute | `OPENAI_API_KEY=your-key OPENAI_BASE_URL=http://localhost:20128/v1 CORECODER_MODEL=auto` |
 | Local Ollama | `OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1 CORECODER_MODEL=qwen2.5-coder` |
 
-Kimi, Qwen and the like are the same two variables; for providers that don't even offer an OpenAI-compatible endpoint, the optional LiteLLM backend (`pip install "corecoder[litellm]"`) routes to a hundred-plus of them. The third essay goes into this in detail. The key can be `export`ed directly or dropped into a `.env` at the project root, which is loaded on startup. Then:
+Kimi, Qwen and the like are the same two variables; for providers that don't even offer an OpenAI-compatible endpoint, install the optional LiteLLM backend from this checkout (`pip install -e ".[litellm]"`) to route to a hundred-plus of them. The third essay goes into this in detail. The key can be `export`ed directly or dropped into a `.env` at the project root, which is loaded on startup. Then:
 
 Smoke-tested end to end (read the file, edit it, run it, report back) against DeepSeek, Qwen3 and Kimi K2 via a single OpenRouter-compatible endpoint; each completed the full loop. One note for one-shot scripts: `-p` refuses mutating tools unless you pass `--yes`, by design.
 

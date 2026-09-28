@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 import hashlib
+import re
 from typing import Any
 
 _SENSITIVE_KEY_PARTS = (
@@ -59,7 +59,7 @@ def redact_text(text: str) -> str:
     redacted = text
     for pattern in _TEXT_SECRET_PATTERNS:
         redacted = pattern.sub(
-            lambda match: (match.group(1) if pattern.groups else "") + _REDACTED,
+            lambda match, groups=pattern.groups: (match.group(1) if groups else "") + _REDACTED,
             redacted,
         )
     return redacted

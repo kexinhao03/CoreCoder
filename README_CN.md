@@ -8,7 +8,7 @@
 
 中文 | [English](README.md) | [配套源码导读 · 八篇双语](article/)
 
-[![PyPI](https://img.shields.io/pypi/v/corecoder)](https://pypi.org/project/corecoder/)
+[![PyPI：上游 CoreCoder](https://img.shields.io/pypi/v/corecoder?label=PyPI%20上游%20CoreCoder)](https://pypi.org/project/corecoder/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions)
@@ -79,8 +79,6 @@ cd CoreCoder
 pip install -e .
 ```
 
-只想先跑起来找找感觉，直接 `pip install corecoder` 也行。
-
 给它一个模型加一把 key 就能动。默认走 OpenAI 兼容接口，换 provider 通常只是改两个环境变量：
 
 | Provider | 环境变量示例 |
@@ -90,7 +88,7 @@ pip install -e .
 | OmniRoute | `OPENAI_API_KEY=your-key OPENAI_BASE_URL=http://localhost:20128/v1 CORECODER_MODEL=auto` |
 | 本地 Ollama | `OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1 CORECODER_MODEL=qwen2.5-coder` |
 
-Kimi、Qwen 这些同样是改这两个变量；连 OpenAI 兼容接口都不给的 provider，装上可选的 LiteLLM 后端（`pip install "corecoder[litellm]"`）能路由一百多家。第三篇文章把这块讲得更细。key 可以直接 `export`，也可以在项目根目录扔个 `.env`，启动时自动加载。然后：
+Kimi、Qwen 这些同样是改这两个变量；连 OpenAI 兼容接口都不给的 provider，也应从当前检出的源码安装可选 LiteLLM 后端（`pip install -e ".[litellm]"`），可路由一百多家。第三篇文章把这块讲得更细。key 可以直接 `export`，也可以在项目根目录扔个 `.env`，启动时自动加载。然后：
 
 端到端真机冒烟过三家（读文件、改代码、跑一次确认、自己报告）：DeepSeek、Qwen3、Kimi K2，走同一个 OpenRouter 兼容端点，各自完整跑完全循环。写脚本用 one-shot 的留意：`-p` 默认拒绝一切改动类工具，要加 `--yes`，这是设计如此。
 
