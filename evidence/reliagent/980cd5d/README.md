@@ -1,5 +1,9 @@
 # ReliAgent P0 Runtime evidence
 
+> **Historical / superseded snapshot.** The current evidence is
+> [`8a269a3`](../8a269a3/). Keep this directory only for audit history; do not
+> present it as validation of current source.
+
 Evaluated Runtime commit: `980cd5dea37146d499e14cdab96aea7bd42083ac`.
 The Runtime had no tracked changes when evaluation began. The subsequent
 evidence commit changes no file under `corecoder/`.

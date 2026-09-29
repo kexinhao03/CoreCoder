@@ -15,10 +15,18 @@ from corecoder.evals.suites.ml_workflow import ml_workflow_configurations, ml_wo
 from corecoder.evals.suites.phase3 import phase3_configurations, phase3_suite
 
 ROOT = Path(__file__).resolve().parents[2]
-EVIDENCE = ROOT / "evidence" / "reliagent" / "df76ce3"
-EVALUATED_COMMIT = "df76ce390796a59636300b789682d9a63312f9fd"
-SUPERSEDED_EVIDENCE = ROOT / "evidence" / "reliagent" / "980cd5d"
-SUPERSEDED_EVALUATED_COMMIT = "980cd5dea37146d499e14cdab96aea7bd42083ac"
+EVIDENCE = ROOT / "evidence" / "reliagent" / "8a269a3"
+EVALUATED_COMMIT = "8a269a3d5da9eaef54a696854f784d1c68f80e1c"
+SUPERSEDED_EVIDENCE = (
+    (
+        ROOT / "evidence" / "reliagent" / "df76ce3",
+        "df76ce390796a59636300b789682d9a63312f9fd",
+    ),
+    (
+        ROOT / "evidence" / "reliagent" / "980cd5d",
+        "980cd5dea37146d499e14cdab96aea7bd42083ac",
+    ),
+)
 LEGACY_EVIDENCE = ROOT / "evidence" / "reliagent" / "c724f8a"
 LEGACY_EVALUATED_COMMIT = "c724f8a4bc45c8ad900040f46fd306d78039279a"
 
@@ -28,8 +36,8 @@ def test_current_evidence_manifest_binds_exact_runtime_and_generated_files():
     assert manifest["schema_version"] == "reliagent.evidence.v1"
     assert manifest["evaluated_commit"] == EVALUATED_COMMIT
     assert manifest["generated_with"] == [
-        ".venv/bin/python -m corecoder.reliagent_cli eval ml_workflow --output /tmp/reliagent-p0-final.MaEJan/ml_workflow",
-        ".venv/bin/python -m corecoder.reliagent_cli eval phase3 --output /tmp/reliagent-p0-final.MaEJan/phase3",
+        ".venv/bin/python -m corecoder.reliagent_cli eval ml_workflow --output /tmp/reliagent-p0-wave2.5WO50I/ml_workflow",
+        ".venv/bin/python -m corecoder.reliagent_cli eval phase3 --output /tmp/reliagent-p0-wave2.5WO50I/phase3",
     ]
     assert set(manifest["sha256"]) == {
         "ml-workflow-results.json", "ml-workflow-report.md",
@@ -200,19 +208,20 @@ def test_legacy_evidence_snapshot_retains_integrity_and_historical_results():
     )
 
 
-def test_superseded_evidence_snapshot_retains_integrity():
+@pytest.mark.parametrize("evidence,evaluated_commit", SUPERSEDED_EVIDENCE)
+def test_superseded_evidence_snapshot_retains_integrity(evidence, evaluated_commit):
     manifest = json.loads(
-        (SUPERSEDED_EVIDENCE / "manifest.json").read_text(encoding="utf-8")
+        (evidence / "manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["schema_version"] == "reliagent.evidence.v1"
-    assert manifest["evaluated_commit"] == SUPERSEDED_EVALUATED_COMMIT
+    assert manifest["evaluated_commit"] == evaluated_commit
     for filename, expected_sha256 in manifest["sha256"].items():
         assert hashlib.sha256(
-            (SUPERSEDED_EVIDENCE / filename).read_bytes()
+            (evidence / filename).read_bytes()
         ).hexdigest() == expected_sha256
     for prefix, total in (("ml-workflow", 24), ("phase3", 90)):
         payload = json.loads(
-            (SUPERSEDED_EVIDENCE / f"{prefix}-results.json").read_text(
+            (evidence / f"{prefix}-results.json").read_text(
                 encoding="utf-8"
             )
         )
