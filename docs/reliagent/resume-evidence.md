@@ -21,8 +21,8 @@ deferred, so no resume bullet should imply that they have shipped.
 
 ## Current P0 snapshot
 
-[Runtime `980cd5d` evidence](../../evidence/reliagent/980cd5d/) evaluates full
-commit `980cd5dea37146d499e14cdab96aea7bd42083ac`. Real CLI runs produced
+[Runtime `df76ce3` evidence](../../evidence/reliagent/df76ce3/) evaluates full
+commit `df76ce390796a59636300b789682d9a63312f9fd`. Real CLI runs produced
 24/24 ML and 90/90 phase3 scenario-contract passes across the three named
 configurations. Each suite uses the same case input and fault schedule across
 configurations; the generated Raw JSON and Markdown are unchanged, with exact
@@ -40,12 +40,13 @@ does not establish strict-v2 completion or an arbitrary exactly-once guarantee.
 
 ## Historical material is not a current claim
 
-`evidence/reliagent/c724f8a/` and commit
-`c724f8a4bc45c8ad900040f46fd306d78039279a` are legacy, superseded snapshot
-evidence. The checked-in Raw JSON, Markdown reports, and their recorded
-`90 / 90` and `24 / 24` scenario-contract counts may be inspected as history,
-but must not be presented as validation of current source, a current external
-baseline, or strict-v2 completion.
+`evidence/reliagent/980cd5d/` and `evidence/reliagent/c724f8a/`, evaluating
+commits `980cd5dea37146d499e14cdab96aea7bd42083ac` and
+`c724f8a4bc45c8ad900040f46fd306d78039279a`, are superseded snapshot evidence.
+Their checked-in Raw JSON, Markdown reports, and recorded `90 / 90` and
+`24 / 24` scenario-contract counts may be inspected as history, but must not be
+presented as validation of current source, a current external baseline, or
+strict-v2 completion.
 
 The legacy local fixture's duplicate-effect observation was limited to its
 Effect Marker; it was never a guarantee for arbitrary tools or services.
@@ -53,7 +54,7 @@ Effect Marker; it was never a guarantee for arbitrary tools or services.
 ## Reproduction boundary
 
 Use the checked-in tests and the current fixed-workflow CLI to verify current
-behavior. Do not use `git diff --exit-code` against the superseded `c724f8a`
-commit as proof that current Runtime source is identical to the legacy snapshot.
-For this P0 snapshot, the appropriate source-identity check is
-`git diff --exit-code 980cd5dea37146d499e14cdab96aea7bd42083ac -- corecoder`.
+behavior. Do not use `git diff --exit-code` against either superseded commit as
+proof that current Runtime source is identical to a historical snapshot. For
+this P0 snapshot, the appropriate source-identity check is
+`git diff --exit-code df76ce390796a59636300b789682d9a63312f9fd -- corecoder`.

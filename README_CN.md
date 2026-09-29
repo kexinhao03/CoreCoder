@@ -31,7 +31,7 @@
 | Recovery CLI | `reliagent` CLI 暴露固定 workflow 的恢复与对账，并非交互式 Agent 的恢复入口。 |
 | 评测 | 结果比较三个 **Runtime 配置**：`no_retry_no_recovery`、`full`、`no_recovery`，并非外部 baseline。 |
 | ML workflow | 当前只有一个确定性本地 workflow；第二个 workflow 尚未实现。 |
-| 证据目录 | `980cd5d` 与 `c724f8a` 都是历史、已 superseded 快照。审批摘要脱敏与中断结算修复只在新的 Runtime Commit 冻结后评测，紧随其后的证据 Commit 再链接以该 SHA 命名的新目录。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
+| 证据目录 | [`df76ce3`](evidence/reliagent/df76ce3/) 是当前快照，评测冻结的 Runtime Commit `df76ce390796a59636300b789682d9a63312f9fd`：ML 24/24、phase3 90/90 场景契约通过。`980cd5d` 与 `c724f8a` 均为历史、已 superseded 快照。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
 
 请在此 Fork 提交问题与变更：[kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues)。
 
@@ -292,7 +292,7 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 sh scripts/reliagent_ml_demo.sh
 ```
 
-[架构图与状态机](docs/reliagent/architecture.md) 与[简历表述边界](docs/reliagent/resume-evidence.md)说明当前范围。`980cd5d` 与 `c724f8a` 证据目录在审批摘要脱敏与中断结算修复后均作为历史、已 superseded 快照保留。下一个证据 Commit 会从冻结的 Runtime SHA 重新生成，并记录精确命令、场景计数、文件哈希和全量测试结果。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred，不声称 strict-v2 完成。
+[架构图与状态机](docs/reliagent/architecture.md)、[简历表述边界](docs/reliagent/resume-evidence.md)与当前 [`df76ce3` 证据](evidence/reliagent/df76ce3/)说明当前范围。该证据评测冻结的 Runtime Commit `df76ce390796a59636300b789682d9a63312f9fd`，并记录精确命令、ML 24/24 与 phase3 90/90 场景契约通过数、文件哈希和测试结果。`980cd5d` 与 `c724f8a` 目录保留为历史、已 superseded 快照。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred，不声称 strict-v2 完成。
 
 ```mermaid
 flowchart LR

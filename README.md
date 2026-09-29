@@ -33,7 +33,7 @@ links intentionally continue to point to that source.
 | Recovery CLI | The `reliagent` CLI exposes fixed workflow recovery and reconciliation; it is not an interactive-Agent recovery surface. |
 | Evaluation | Results compare three **Runtime configurations**—`no_retry_no_recovery`, `full`, and `no_recovery`—not an external baseline. |
 | ML workflow | One deterministic local workflow is present. A second workflow remains deferred. |
-| Evidence directories | `980cd5d` and `c724f8a` are historical, superseded snapshots. The approval-redaction and interruption repairs are evaluated only after their Runtime commit is frozen; the following evidence commit links that new SHA-keyed directory. Packaging checks are blocked by missing build tools. P1 Metrics/Trace provenance and an external baseline remain deferred. |
+| Evidence directories | [`df76ce3`](evidence/reliagent/df76ce3/) is the current snapshot and evaluates frozen Runtime commit `df76ce390796a59636300b789682d9a63312f9fd`: 24/24 ML and 90/90 phase3 scenario contracts passed. `980cd5d` and `c724f8a` are historical, superseded snapshots. Packaging checks are blocked by missing build tools. P1 Metrics/Trace provenance and an external baseline remain deferred. |
 
 Please file changes and issues in this fork: [kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues).
 
@@ -295,14 +295,15 @@ For a portfolio-oriented walkthrough, use the [3–5 minute demo](docs/reliagent
 sh scripts/reliagent_ml_demo.sh
 ```
 
-See the [architecture and state machines](docs/reliagent/architecture.md) and
-[resume-claim boundary](docs/reliagent/resume-evidence.md). The `980cd5d` and
-`c724f8a` evidence directories remain historical and superseded after the
-approval-redaction and interruption repairs. The next evidence commit is
-generated from the frozen Runtime SHA and records its exact commands, scenario
-counts, file hashes, and full-suite result. Packaging checks are blocked by
-missing build tools; P1 Metrics/Trace provenance and an external baseline
-comparison remain deferred, with no strict-v2 completion claim.
+See the [architecture and state machines](docs/reliagent/architecture.md),
+[resume-claim boundary](docs/reliagent/resume-evidence.md), and current
+[`df76ce3` evidence](evidence/reliagent/df76ce3/). It evaluates frozen Runtime
+commit `df76ce390796a59636300b789682d9a63312f9fd` and records exact commands,
+24/24 ML and 90/90 phase3 scenario-contract passes, file hashes, and test
+results. The `980cd5d` and `c724f8a` directories remain historical and
+superseded. Packaging checks are blocked by missing build tools; P1
+Metrics/Trace provenance and an external baseline comparison remain deferred,
+with no strict-v2 completion claim.
 
 ```mermaid
 flowchart LR

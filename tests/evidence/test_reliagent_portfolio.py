@@ -15,8 +15,10 @@ from corecoder.evals.suites.ml_workflow import ml_workflow_configurations, ml_wo
 from corecoder.evals.suites.phase3 import phase3_configurations, phase3_suite
 
 ROOT = Path(__file__).resolve().parents[2]
-EVIDENCE = ROOT / "evidence" / "reliagent" / "980cd5d"
-EVALUATED_COMMIT = "980cd5dea37146d499e14cdab96aea7bd42083ac"
+EVIDENCE = ROOT / "evidence" / "reliagent" / "df76ce3"
+EVALUATED_COMMIT = "df76ce390796a59636300b789682d9a63312f9fd"
+SUPERSEDED_EVIDENCE = ROOT / "evidence" / "reliagent" / "980cd5d"
+SUPERSEDED_EVALUATED_COMMIT = "980cd5dea37146d499e14cdab96aea7bd42083ac"
 LEGACY_EVIDENCE = ROOT / "evidence" / "reliagent" / "c724f8a"
 LEGACY_EVALUATED_COMMIT = "c724f8a4bc45c8ad900040f46fd306d78039279a"
 
@@ -26,8 +28,8 @@ def test_current_evidence_manifest_binds_exact_runtime_and_generated_files():
     assert manifest["schema_version"] == "reliagent.evidence.v1"
     assert manifest["evaluated_commit"] == EVALUATED_COMMIT
     assert manifest["generated_with"] == [
-        ".venv/bin/python -m corecoder.reliagent_cli eval ml_workflow --output /tmp/reliagent-p0-task8.fyKFyB/ml_workflow",
-        ".venv/bin/python -m corecoder.reliagent_cli eval phase3 --output /tmp/reliagent-p0-task8.fyKFyB/phase3",
+        ".venv/bin/python -m corecoder.reliagent_cli eval ml_workflow --output /tmp/reliagent-p0-final.MaEJan/ml_workflow",
+        ".venv/bin/python -m corecoder.reliagent_cli eval phase3 --output /tmp/reliagent-p0-final.MaEJan/phase3",
     ]
     assert set(manifest["sha256"]) == {
         "ml-workflow-results.json", "ml-workflow-report.md",
@@ -196,6 +198,31 @@ def test_legacy_evidence_snapshot_retains_integrity_and_historical_results():
         if result["config_id"] == "baseline"
         and result["case_id"] in {"ML02", "ML03", "ML04", "ML05"}
     )
+
+
+def test_superseded_evidence_snapshot_retains_integrity():
+    manifest = json.loads(
+        (SUPERSEDED_EVIDENCE / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["schema_version"] == "reliagent.evidence.v1"
+    assert manifest["evaluated_commit"] == SUPERSEDED_EVALUATED_COMMIT
+    for filename, expected_sha256 in manifest["sha256"].items():
+        assert hashlib.sha256(
+            (SUPERSEDED_EVIDENCE / filename).read_bytes()
+        ).hexdigest() == expected_sha256
+    for prefix, total in (("ml-workflow", 24), ("phase3", 90)):
+        payload = json.loads(
+            (SUPERSEDED_EVIDENCE / f"{prefix}-results.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert payload["summary"]["total_repetitions"] == total
+        assert payload["summary"]["contract_passed_repetitions"] == total
+        assert {result["config_id"] for result in payload["results"]} == {
+            "no_retry_no_recovery",
+            "full",
+            "no_recovery",
+        }
 
 
 def test_demo_runs_real_after_effect_recovery_without_duplicate_effect(tmp_path):
