@@ -31,7 +31,7 @@
 | Recovery CLI | `reliagent` CLI 暴露固定 workflow 的恢复与对账，并非交互式 Agent 的恢复入口。 |
 | 评测 | 结果比较三个 **Runtime 配置**：`no_retry_no_recovery`、`full`、`no_recovery`，并非外部 baseline。 |
 | ML workflow | 当前只有一个确定性本地 workflow；第二个 workflow 尚未实现。 |
-| 证据目录 | `evidence/reliagent/c724f8a/` 是 legacy、已 superseded 的快照，不能证明当前源码已完成 strict-v2。P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
+| 证据目录 | [当前 P0 证据](evidence/reliagent/980cd5d/) 对应 Runtime `980cd5d`；`c724f8a` 保留为 legacy、已 superseded 快照。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
 
 请在此 Fork 提交问题与变更：[kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues)。
 
@@ -291,8 +291,9 @@ sh scripts/reliagent_ml_demo.sh
 ```
 
 [架构图与状态机](docs/reliagent/architecture.md) 与[简历表述边界](docs/reliagent/resume-evidence.md)说明当前范围。仓库内的
-[Raw JSON 与 Markdown 证据包](evidence/reliagent/c724f8a/) 指向 legacy、已 superseded 的 Runtime Commit
-`c724f8a4bc45c8ad900040f46fd306d78039279a`；它是历史材料，不能证明当前源码完成 strict-v2。P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred。
+[Raw JSON 与 Markdown 证据包](evidence/reliagent/980cd5d/) 对应 Runtime Commit
+`980cd5dea37146d499e14cdab96aea7bd42083ac`：ML 24/24、phase3 90/90 场景契约通过，manifest 保留精确命令和文件哈希。
+`c724f8a` 继续保留为 legacy、已 superseded 的历史快照。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred，不声称 strict-v2 完成。
 
 ```mermaid
 flowchart LR
@@ -346,21 +347,21 @@ reliagent workflow ml report <run_id> --workspace "$WORKSPACE"
 
 Event 保留每个 Run 内的序号和 ToolCall 标识。Agent 循环仍只接入两个工具，恢复入口位于固定 workflow CLI，而不是交互式 CoreCoder CLI。P1 Metrics/Trace provenance 仍 deferred；由于尚未持久化 Run 级 LLM telemetry，Runtime token/cost 仍明确标为不可用。
 
-以下固定矩阵材料只记录 legacy snapshot；其中三种配置是 `no_retry_no_recovery`、`full`、`no_recovery`，不是 external baseline：
+当前固定矩阵以相同输入和故障计划比较 `no_retry_no_recovery`、`full`、`no_recovery` 三种配置，属于 Runtime 内部对比：
 
 ```bash
 reliagent eval phase3 --output /tmp/reliagent-eval
 ```
 
-Legacy Raw JSON 记录的是场景契约，不等同于通用任务成功。这不是生产环境可靠性基准、通用 exactly-once 保证或当前 P1 Metrics/Trace provenance 的声明。
+当前 Raw JSON 记录 90/90 场景契约通过，不等同于通用任务成功。这不是生产环境可靠性基准、通用 exactly-once 保证或 P1 Metrics/Trace provenance 的声明。
 
-Legacy workflow 专用矩阵曾用同一输入在三种配置下各运行八个场景：
+Workflow 专用矩阵用同一输入在三种配置下各运行八个场景，共 24/24 场景契约通过：
 
 ```bash
 reliagent eval ml_workflow --output /tmp/reliagent-ml-eval
 ```
 
-其中的数字只描述固定本地场景，属于已 superseded 的历史证据；它们不证明第二个 workflow、external baseline、strict-v2 完成或当前 Trace/Metric provenance。
+其中的数字只描述固定本地场景，不证明第二个 workflow、external baseline、strict-v2 完成或 P1 Trace/Metric provenance。Demo 使用真实 exit-87 恢复，观测到一个 effect marker；这不是任意外部副作用的保证。
 
 ## 相关项目
 

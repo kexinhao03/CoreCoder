@@ -33,7 +33,7 @@ links intentionally continue to point to that source.
 | Recovery CLI | The `reliagent` CLI exposes fixed workflow recovery and reconciliation; it is not an interactive-Agent recovery surface. |
 | Evaluation | Results compare three **Runtime configurations**—`no_retry_no_recovery`, `full`, and `no_recovery`—not an external baseline. |
 | ML workflow | One deterministic local workflow is present. A second workflow remains deferred. |
-| Evidence directories | `evidence/reliagent/c724f8a/` is a legacy, superseded snapshot, not evidence that current source completes strict-v2. P1 Metrics/Trace provenance and an external baseline remain deferred. |
+| Evidence directories | [Current P0 evidence](evidence/reliagent/980cd5d/) evaluates Runtime `980cd5d`; `c724f8a` remains legacy and superseded. Packaging checks are blocked by missing build tools. P1 Metrics/Trace provenance and an external baseline remain deferred. |
 
 Please file changes and issues in this fork: [kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues).
 
@@ -295,10 +295,12 @@ sh scripts/reliagent_ml_demo.sh
 
 See the [architecture and state machines](docs/reliagent/architecture.md) and
 [resume-claim boundary](docs/reliagent/resume-evidence.md). The checked-in
-[Raw JSON plus Markdown evidence](evidence/reliagent/c724f8a/) references legacy,
-superseded commit `c724f8a4bc45c8ad900040f46fd306d78039279a`; it is historical
-material, not proof that current source completes strict-v2. P1 Metrics/Trace
-provenance and an external baseline comparison remain deferred.
+[Raw JSON plus Markdown evidence](evidence/reliagent/980cd5d/) evaluates Runtime
+commit `980cd5dea37146d499e14cdab96aea7bd42083ac`: 24/24 ML and 90/90 phase3
+scenario contracts, with exact commands and file hashes in its manifest.
+The `c724f8a` snapshot remains legacy and superseded. Packaging checks are
+blocked by missing build tools; P1 Metrics/Trace provenance and an external
+baseline comparison remain deferred, with no strict-v2 completion claim.
 
 ```mermaid
 flowchart LR
@@ -351,21 +353,21 @@ The last command creates `reports/<run_id>/ml-experiment-result.json` and `ml-ex
 
 Events retain per-Run sequence and ToolCall identifiers for inspection. Agent-loop integration remains intentionally limited to two tools, and recovery is exposed by the fixed-workflow CLI rather than the interactive CoreCoder CLI. P1 Metrics/Trace provenance is deferred; Runtime token/cost remains unavailable because Run-scoped LLM telemetry is not persisted.
 
-The following fixed-matrix material documents the legacy snapshot only; its configurations are `no_retry_no_recovery`, `full`, and `no_recovery`, not an external baseline:
+The current fixed matrix compares `no_retry_no_recovery`, `full`, and `no_recovery` under the same inputs and fault schedules; it is an internal Runtime comparison:
 
 ```bash
 reliagent eval phase3 --output /tmp/reliagent-eval
 ```
 
-The legacy Raw JSON records scenario contracts rather than general task success. It is not a production reliability benchmark, a general exactly-once guarantee, or a current claim of P1 Metrics/Trace provenance.
+The current Raw JSON records 90/90 scenario contracts rather than general task success. It is not a production reliability benchmark, a general exactly-once guarantee, or a claim of P1 Metrics/Trace provenance.
 
-The legacy workflow-specific matrix ran eight cases once under the same three configurations:
+The workflow-specific matrix runs eight cases once under each of the same three configurations (24/24 scenario contracts):
 
 ```bash
 reliagent eval ml_workflow --output /tmp/reliagent-ml-eval
 ```
 
-Its recorded figures describe only fixed local scenarios. They are superseded historical evidence and do not establish a second workflow, an external baseline, strict-v2 completion, or current Trace/Metric provenance.
+Its recorded figures describe only fixed local scenarios. They do not establish a second workflow, an external baseline, strict-v2 completion, or P1 Trace/Metric provenance. The demo exercises real exit-87 recovery with one observed effect marker; this is not a guarantee for arbitrary external effects.
 
 ## Related Projects
 

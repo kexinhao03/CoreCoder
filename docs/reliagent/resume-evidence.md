@@ -19,6 +19,25 @@ This is an internal Runtime-configuration comparison, not an external baseline.
 P1 Metrics/Trace provenance, a second workflow, and an external baseline are
 deferred, so no resume bullet should imply that they have shipped.
 
+## Current P0 snapshot
+
+[Runtime `980cd5d` evidence](../../evidence/reliagent/980cd5d/) evaluates full
+commit `980cd5dea37146d499e14cdab96aea7bd42083ac`. Real CLI runs produced
+24/24 ML and 90/90 phase3 scenario-contract passes across the three named
+configurations. Each suite uses the same case input and fault schedule across
+configurations; the generated Raw JSON and Markdown are unchanged, with exact
+commands and SHA-256 hashes recorded in the manifest.
+
+The checked-in evidence test recomputes case/configuration coverage, lifecycle
+Trace completeness and duplicate-effect counts, and runs the exit-87 demo with
+one effect marker after reconciliation. These counts include expected failures
+and refusals; they are not a claim of 100% task success. The evidence commit
+changes no `corecoder/` source relative to the evaluated Runtime commit.
+
+Packaging acceptance remains blocked because existing interpreters lack
+`build`, `twine` and `hatchling`; no dependency was installed. This snapshot
+does not establish strict-v2 completion or an arbitrary exactly-once guarantee.
+
 ## Historical material is not a current claim
 
 `evidence/reliagent/c724f8a/` and commit
@@ -36,3 +55,5 @@ Effect Marker; it was never a guarantee for arbitrary tools or services.
 Use the checked-in tests and the current fixed-workflow CLI to verify current
 behavior. Do not use `git diff --exit-code` against the superseded `c724f8a`
 commit as proof that current Runtime source is identical to the legacy snapshot.
+For this P0 snapshot, the appropriate source-identity check is
+`git diff --exit-code 980cd5dea37146d499e14cdab96aea7bd42083ac -- corecoder`.
