@@ -66,9 +66,12 @@ class AgentRuntimeSession:
 
     def finish(self, status: RunStatus) -> RunRecord:
         run = self.store.get_run(self.run_id)
-        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
-            return run
-        if run.status is RunStatus.RECOVERABLE and status is RunStatus.SUCCEEDED:
+        if run.status in {
+            RunStatus.RECOVERABLE,
+            RunStatus.SUCCEEDED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }:
             return run
         if status is RunStatus.CANCELLED:
             return self.executor.cancel_run(self.run_id)

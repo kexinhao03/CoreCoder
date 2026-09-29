@@ -99,7 +99,7 @@ def test_trace_exports_approval_records(running_store):
         "status": "pending",
         "decision": None,
         "tool_name": "edit-config",
-        "arguments_summary": "safe",
+        "arguments_summary": '{"argv": ["edit"]}',
         "workspace": ".",
         "risk_reason": "mutates config",
         "requested_at": approval.requested_at,

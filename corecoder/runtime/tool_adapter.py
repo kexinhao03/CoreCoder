@@ -105,6 +105,11 @@ class RuntimeToolAdapter(Tool):
             if call.step_id == step_id
         ]
         if not calls:
+            self._store.transition_step(
+                step_id,
+                StepStatus.FAILED,
+                "step.failed",
+            )
             return
         if calls[-1].status is ToolCallStatus.CANCELLED:
             status = StepStatus.CANCELLED

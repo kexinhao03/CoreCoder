@@ -336,27 +336,35 @@ class SQLiteStore:
             raise
 
     @staticmethod
+    def _approval_summary_from_stored_arguments(
+        tool_name: str, arguments_json: str
+    ) -> str:
+        try:
+            arguments = json.loads(arguments_json)
+        except json.JSONDecodeError:
+            arguments = {"arguments": {"redacted": True}}
+        if not isinstance(arguments, dict):
+            arguments = {"arguments": {"redacted": True}}
+        safe_arguments, _ = redact_for_storage(tool_name, arguments)
+        return summarize_arguments(safe_arguments)
+
+    @staticmethod
     def _scrub_legacy_approval_summaries(connection: sqlite3.Connection) -> None:
         connection.execute("BEGIN IMMEDIATE")
         try:
             rows = connection.execute(
                 """
                 SELECT approvals.id, approvals.arguments_summary,
-                       tool_calls.arguments_json
+                       tool_calls.tool_name, tool_calls.arguments_json
                 FROM approvals
                 JOIN tool_calls ON tool_calls.id = approvals.tool_call_id
-                WHERE approvals.tool_name = 'write_file'
                 ORDER BY approvals.id
                 """
             ).fetchall()
             for row in rows:
-                try:
-                    arguments = json.loads(row["arguments_json"])
-                except json.JSONDecodeError:
-                    arguments = {"arguments": {"redacted": True}}
-                if not isinstance(arguments, dict):
-                    arguments = {"arguments": {"redacted": True}}
-                safe_summary = summarize_arguments(arguments)
+                safe_summary = SQLiteStore._approval_summary_from_stored_arguments(
+                    row["tool_name"], row["arguments_json"]
+                )
                 if safe_summary != row["arguments_summary"]:
                     connection.execute(
                         "UPDATE approvals SET arguments_summary = ? WHERE id = ?",
@@ -985,6 +993,10 @@ class SQLiteStore:
             if run_row is None:
                 raise KeyError(f"run not found: {call_row['run_id']}")
 
+            safe_arguments_summary = self._approval_summary_from_stored_arguments(
+                call_row["tool_name"], call_row["arguments_json"]
+            )
+
             ensure_run_transition(
                 RunStatus(run_row["status"]), RunStatus.WAITING_APPROVAL
             )
@@ -998,7 +1010,7 @@ class SQLiteStore:
                 status=ApprovalStatus.PENDING,
                 decision=None,
                 tool_name=call_row["tool_name"],
-                arguments_summary=arguments_summary,
+                arguments_summary=safe_arguments_summary,
                 workspace=workspace,
                 risk_reason=risk_reason,
                 requested_at=timestamp,

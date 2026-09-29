@@ -157,6 +157,76 @@ def test_initialize_scrubs_legacy_tool_call_raw_cells(tmp_path):
     assert replayable == 0
 
 
+def test_request_approval_ignores_caller_summary_for_write_content(store_with_run, tmp_path):
+    store_with_run.transition_run("run-1", RunStatus.RUNNING, "run.started")
+    content = "ordinary private body from direct Store API"
+    call = store_with_run.create_tool_call(
+        run_id="run-1",
+        tool_name="write_file",
+        arguments={"file_path": str(tmp_path / "target.txt"), "content": content},
+        risk_level=RiskLevel.MUTATING,
+        execution_kind=ExecutionKind.IN_PROCESS,
+        idempotent=False,
+        idempotency_key=None,
+        timeout_seconds=30,
+        tool_call_id="call-1",
+    )
+
+    store_with_run.request_approval(
+        call.id,
+        arguments_summary=f"caller-controlled summary: {content}",
+        workspace=str(tmp_path),
+        risk_reason="mutating",
+        approval_id="approval-1",
+    )
+
+    with sqlite3.connect(store_with_run.path) as connection:
+        summary = connection.execute(
+            "SELECT arguments_summary FROM approvals WHERE id = ?",
+            ("approval-1",),
+        ).fetchone()[0]
+    assert content not in summary
+    assert "caller-controlled summary" not in summary
+    assert '"redacted": true' in summary
+    assert '"sha256"' in summary
+
+
+def test_request_approval_derives_summary_from_redacted_non_write_argv(store_with_run):
+    store_with_run.transition_run("run-1", RunStatus.RUNNING, "run.started")
+    credential = "DIRECT_STORE_ARGV_CREDENTIAL"
+    call = store_with_run.create_tool_call(
+        run_id="run-1",
+        tool_name="bash",
+        arguments={"argv": ["client", "--api-key", credential, "--verbose"]},
+        risk_level=RiskLevel.MUTATING,
+        execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=False,
+        idempotency_key=None,
+        timeout_seconds=30,
+        tool_call_id="call-1",
+    )
+
+    store_with_run.request_approval(
+        call.id,
+        arguments_summary=f"caller-controlled summary: {credential}",
+        workspace=".",
+        risk_reason="mutating",
+        approval_id="approval-1",
+    )
+
+    with sqlite3.connect(store_with_run.path) as connection:
+        arguments_json, summary = connection.execute(
+            "SELECT tool_calls.arguments_json, approvals.arguments_summary "
+            "FROM approvals JOIN tool_calls ON tool_calls.id = approvals.tool_call_id "
+            "WHERE approvals.id = ?",
+            ("approval-1",),
+        ).fetchone()
+    assert credential not in arguments_json
+    assert credential not in summary
+    assert "caller-controlled summary" not in summary
+    assert summary == '{"argv": ["client", "--api-key", "[REDACTED]", "--verbose"]}'
+
+
 def _legacy_write_approval(store, tmp_path, suffix):
     run_id = f"legacy-run-{suffix}"
     call_id = f"legacy-call-{suffix}"
@@ -191,6 +261,15 @@ def _legacy_write_approval(store, tmp_path, suffix):
         risk_reason="mutating",
         approval_id=approval_id,
     )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE approvals SET arguments_summary = ? WHERE id = ?",
+            (
+                '{"content": "' + content + '", "file_path": "'
+                + str(tmp_path / f"{suffix}.txt") + '"}',
+                approval_id,
+            ),
+        )
     return approval_id, content
 
 
@@ -205,6 +284,73 @@ def test_initialize_scrubs_legacy_write_approval_summary(tmp_path):
     assert content not in approval.arguments_summary
     assert '"redacted": true' in approval.arguments_summary
     assert '"sha256"' in approval.arguments_summary
+
+
+def test_initialize_rebuilds_every_legacy_approval_summary_from_safe_tool_arguments(tmp_path):
+    store = SQLiteStore(tmp_path / "legacy-approvals.db")
+    store.initialize()
+    write_id, write_body = _legacy_write_approval(store, tmp_path, "body")
+    pem_id, pem_body = _legacy_write_approval(store, tmp_path, "pem")
+    pem_body = "-----BEGIN PRIVATE KEY-----\nLEGACY_PEM_BODY\n-----END PRIVATE KEY-----"
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE approvals SET arguments_summary = ? WHERE id = ?",
+            (pem_body, pem_id),
+        )
+
+    run_id = "legacy-run-argv"
+    call_id = "legacy-call-argv"
+    approval_id = "legacy-approval-argv"
+    argv_credential = "LEGACY_ARGV_CREDENTIAL"
+    store.create_run(
+        goal="legacy argv approval scrub",
+        workflow="corecoder_agent",
+        workspace=tmp_path,
+        model="legacy-model",
+        prompt_version="legacy-v1",
+        run_id=run_id,
+    )
+    store.transition_run(run_id, RunStatus.RUNNING, "run.started")
+    store.create_tool_call(
+        run_id=run_id,
+        tool_name="bash",
+        arguments={"argv": ["client", "--api-key", argv_credential]},
+        risk_level=RiskLevel.MUTATING,
+        execution_kind=ExecutionKind.SUBPROCESS,
+        idempotent=False,
+        idempotency_key=None,
+        timeout_seconds=30,
+        tool_call_id=call_id,
+    )
+    store.request_approval(
+        call_id,
+        arguments_summary=argv_credential,
+        workspace=str(tmp_path),
+        risk_reason="mutating",
+        approval_id=approval_id,
+    )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE approvals SET arguments_summary = ? WHERE id = ?",
+            (argv_credential, approval_id),
+        )
+
+    store.initialize()
+
+    with sqlite3.connect(store.path) as connection:
+        summaries = dict(connection.execute(
+            "SELECT id, arguments_summary FROM approvals ORDER BY id"
+        ).fetchall())
+    combined = "\n".join(summaries.values())
+    assert write_body not in combined
+    assert pem_body not in combined
+    assert "LEGACY_PEM_BODY" not in combined
+    assert argv_credential not in combined
+    assert summaries[write_id].count('"sha256"') == 1
+    assert summaries[pem_id].count('"sha256"') == 1
+    assert summaries[approval_id] == (
+        '{"argv": ["client", "--api-key", "[REDACTED]"]}'
+    )
 
 
 def test_legacy_write_approval_scrub_rolls_back_all_rows_on_failure(tmp_path):

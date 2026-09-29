@@ -15,11 +15,15 @@ from corecoder.llm import LLMResponse, ToolCall
 from corecoder.permissions import Permission
 from corecoder.runtime import (
     ExecutionKind,
+    RecoveryKind,
+    RecoveryManager,
     RiskLevel,
     RunStatus,
     RuntimeToolAdapter,
+    SQLiteStore,
     StepStatus,
     ToolCallStatus,
+    ToolPolicyRegistry,
 )
 from corecoder.tools import ALL_TOOLS
 from corecoder.tools.base import Tool
@@ -210,6 +214,89 @@ def test_read_execution_does_not_acquire_write_gate(tmp_path):
     assert session.store.list_approvals(session.run_id) == []
 
 
+def test_parallel_runtime_reads_settle_refused_step_and_allow_run_to_finish(
+    tmp_path, monkeypatch,
+):
+    class BlockingReadTool(Tool):
+        name = "read_file"
+        description = "Block one real read while its contender reaches Runtime admission"
+        parameters: ClassVar[dict] = {
+            "type": "object",
+            "properties": {"file_path": {"type": "string"}},
+            "required": ["file_path"],
+        }
+
+        def execute(self, file_path: str) -> str:
+            admitted_execution.set()
+            assert release_execution.wait(timeout=5)
+            return f"read succeeded: {file_path}"
+
+    admitted_execution = Event()
+    release_execution = Event()
+    contender_finished_admission = Event()
+    monkeypatch.setattr(cli, "ALL_TOOLS", [BlockingReadTool()])
+    agent, session = cli._build_agent(
+        ScriptedLLM([
+            LLMResponse(tool_calls=[
+                ToolCall(
+                    id="read-a", name="read_file",
+                    arguments={"file_path": str(tmp_path / "a.txt")},
+                ),
+                ToolCall(
+                    id="read-b", name="read_file",
+                    arguments={"file_path": str(tmp_path / "b.txt")},
+                ),
+            ]),
+            LLMResponse(content="Parallel batch handled."),
+        ]),
+        Config(), Permission(), runtime_workspace=tmp_path, runtime_enabled=True,
+    )
+
+    # Deterministically order only admission: the real Store method still
+    # enforces the one-active-ToolCall invariant for the contender.
+    original_create_tool_call = session.store.create_tool_call
+    admission_lock = Lock()
+    first_admitted = Event()
+    leader_chosen = False
+
+    def ordered_create_tool_call(**kwargs):
+        nonlocal leader_chosen
+        with admission_lock:
+            leader = not leader_chosen
+            leader_chosen = True
+        if leader:
+            call = original_create_tool_call(**kwargs)
+            first_admitted.set()
+            return call
+        assert first_admitted.wait(timeout=5)
+        try:
+            return original_create_tool_call(**kwargs)
+        finally:
+            contender_finished_admission.set()
+
+    monkeypatch.setattr(session.store, "create_tool_call", ordered_create_tool_call)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        chat = pool.submit(agent.chat, "Read both files.")
+        assert admitted_execution.wait(timeout=5)
+        assert contender_finished_admission.wait(timeout=5)
+        release_execution.set()
+        assert chat.result(timeout=5) == "Parallel batch handled."
+
+    steps = session.store.list_steps(session.run_id)
+    calls = session.store.list_tool_calls(session.run_id)
+    results = [
+        message["content"] for message in agent.messages
+        if message["role"] == "tool"
+    ]
+    assert sorted(step.status for step in steps) == [StepStatus.FAILED, StepStatus.SUCCEEDED]
+    assert [call.status for call in calls] == [ToolCallStatus.SUCCEEDED]
+    assert sum(result.startswith("read succeeded:") for result in results) == 1
+    assert results.count(
+        "Error executing read_file: run already has an active tool call"
+    ) == 1
+    assert session.finish(RunStatus.SUCCEEDED).status is RunStatus.SUCCEEDED
+
+
 def test_builder_preserves_unwrapped_tools_and_tool_order(tmp_path, monkeypatch):
     class MCPTool(Tool):
         name = "mcp__test__echo"
@@ -299,6 +386,43 @@ def test_session_finish_refuses_success_with_active_work(tmp_path):
     assert session.store.list_steps(session.run_id)[0].status is StepStatus.RUNNING
 
 
+@pytest.mark.parametrize(
+    "requested_status",
+    [RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED],
+)
+def test_session_finish_preserves_recoverable_run(tmp_path, requested_status):
+    from corecoder.agent_runtime import AgentRuntimeSession
+
+    session = AgentRuntimeSession.open(tmp_path, "scripted-demo", Permission())
+    step = session.store.create_step(session.run_id, sequence=1, title="write_file")
+    session.store.transition_step(step.id, StepStatus.RUNNING, "step.started")
+    call = session.store.create_tool_call(
+        run_id=session.run_id,
+        tool_name="write_file",
+        arguments={"file_path": str(tmp_path / "effect.txt"), "content": "effect\n"},
+        risk_level=RiskLevel.MUTATING,
+        execution_kind=ExecutionKind.IN_PROCESS,
+        idempotent=False,
+        idempotency_key=None,
+        timeout_seconds=30,
+        step_id=step.id,
+    )
+    session.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, "tool.started")
+    session.store.transition_tool_call(
+        call.id,
+        ToolCallStatus.INTERRUPTED,
+        "tool.interrupted",
+        payload={"failure_kind": "termination_unknown", "reason": "execution_interrupted"},
+    )
+    session.store.transition_step(step.id, StepStatus.FAILED, "step.failed")
+    events = session.store.list_events(session.run_id)
+
+    finished = session.finish(requested_status)
+
+    assert finished.status is RunStatus.RECOVERABLE
+    assert session.store.list_events(session.run_id) == events
+
+
 def _configure_cli(monkeypatch, tmp_path, llm, *arguments):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.argv", ["corecoder", *arguments])
@@ -372,6 +496,57 @@ def test_one_shot_failure_finishes_run_and_preserves_exit_code(tmp_path, monkeyp
     with _database(tmp_path) as db:
         assert db.execute("SELECT status FROM runs").fetchall() == [(status,)]
         assert db.execute("SELECT type FROM events ORDER BY sequence DESC LIMIT 1").fetchone() == (event,)
+
+
+def test_one_shot_mutating_system_exit_preserves_recovery_and_effect_once(
+    tmp_path, monkeypatch,
+):
+    class EffectThenExitTool(Tool):
+        name = "write_file"
+        description = "Create one effect, then simulate an abrupt process exit"
+        parameters: ClassVar[dict] = {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["file_path", "content"],
+        }
+
+        def execute(self, file_path: str, content: str) -> str:
+            with open(file_path, "a", encoding="utf-8") as marker:
+                marker.write(content)
+            raise SystemExit(87)
+
+    marker = tmp_path / "effect-marker.txt"
+    llm = ScriptedLLM([LLMResponse(tool_calls=[ToolCall(
+        id="write-exit-87",
+        name="write_file",
+        arguments={"file_path": str(marker), "content": "effect\n"},
+    )])])
+    _configure_cli(monkeypatch, tmp_path, llm, "--yes", "-p", "create one effect")
+    monkeypatch.setattr(cli, "ALL_TOOLS", [EffectThenExitTool()])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 87
+    assert marker.read_text(encoding="utf-8") == "effect\n"
+    store = SQLiteStore(tmp_path / ".reliagent" / "agent-runtime.sqlite")
+    store.initialize()
+    [run] = store.list_runs()
+    [step] = store.list_steps(run.id)
+    [call] = store.list_tool_calls(run_id=run.id)
+    [candidate] = RecoveryManager(
+        store, ToolPolicyRegistry.with_builtin_defaults()
+    ).scan(run.id)
+    assert run.status is RunStatus.RECOVERABLE
+    assert step.status is StepStatus.FAILED
+    assert call.status is ToolCallStatus.INTERRUPTED
+    assert candidate.kind is RecoveryKind.HUMAN_REQUIRED
+    assert candidate.call.id == call.id
+    assert store.list_tool_calls(run_id=run.id) == [call]
+    assert marker.read_text(encoding="utf-8").count("effect\n") == 1
 
 
 @pytest.mark.parametrize("first_error", [None, RuntimeError("try again"), KeyboardInterrupt()])
