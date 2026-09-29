@@ -855,16 +855,23 @@ def test_in_process_cooperative_cancellation(running_store, monkeypatch, cancel_
 
 
 @pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit])
-def test_in_process_base_exception_propagates_and_cleans_registration(running_store, exception):
+def test_read_only_base_exception_cancels_call_and_keeps_run_usable(running_store, exception):
     def operation(arguments, cancel_event):
         raise exception()
 
     executor = RuntimeExecutor(running_store, inspect_registry())
     with pytest.raises(exception):
         executor.submit_in_process("run-1", "inspect", {}, operation, tool_call_id="call-1")
-    assert running_store.get_tool_call("call-1").status is ToolCallStatus.RUNNING
-    assert running_store.list_events("run-1")[-1].type == "tool.started"
+    assert running_store.get_tool_call("call-1").status is ToolCallStatus.CANCELLED
+    assert running_store.get_run("run-1").status is RunStatus.RUNNING
+    assert running_store.list_events("run-1")[-1].type == "tool.cancelled"
     assert executor._active_cancellations == {}
+
+    result = executor.submit_in_process(
+        "run-1", "inspect", {}, lambda arguments, cancel_event: "next call succeeded",
+        tool_call_id="call-2",
+    )
+    assert result.call.status is ToolCallStatus.SUCCEEDED
 
 
 def test_in_process_output_is_bounded(running_store):

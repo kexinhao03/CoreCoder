@@ -35,9 +35,10 @@ Set `PYTHON_BIN` when the repository virtual environment is not at `.venv`.
    new effect. The final report says `effect_count=1` and
    `duplicate_effect=false`.
 6. **Evaluation evidence — 30 seconds.** Open
-   `evidence/reliagent/c724f8a/ml-workflow-report.md`, then point to its Raw JSON
-   and manifest digest. Explain that 24/24 is scenario-contract correctness,
-   not 24 successful tasks.
+   the current SHA-keyed evidence directory linked from `README.md`, then point
+   to `ml-workflow-report.md`, its Raw JSON, and the manifest digest. The older
+   `980cd5d` and `c724f8a` directories are superseded historical snapshots.
+   Explain that 24/24 is scenario-contract correctness, not 24 successful tasks.
 
 The last stdout line is a machine-readable JSON summary. A successful run must
 show exit code 87, succeeded final status, one effect, no duplicate, a

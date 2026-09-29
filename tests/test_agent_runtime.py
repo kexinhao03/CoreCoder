@@ -13,7 +13,14 @@ from corecoder.config import Config
 from corecoder.demo import ScriptedLLM
 from corecoder.llm import LLMResponse, ToolCall
 from corecoder.permissions import Permission
-from corecoder.runtime import RunStatus, RuntimeToolAdapter
+from corecoder.runtime import (
+    ExecutionKind,
+    RiskLevel,
+    RunStatus,
+    RuntimeToolAdapter,
+    StepStatus,
+    ToolCallStatus,
+)
 from corecoder.tools import ALL_TOOLS
 from corecoder.tools.base import Tool
 
@@ -265,6 +272,33 @@ def test_session_finish_is_terminal_and_idempotent(tmp_path, status, event):
     ]
 
 
+def test_session_finish_refuses_success_with_active_work(tmp_path):
+    from corecoder.agent_runtime import AgentRuntimeSession
+
+    session = AgentRuntimeSession.open(tmp_path, "scripted-demo", Permission())
+    step = session.store.create_step(session.run_id, sequence=1, title="read_file")
+    session.store.transition_step(step.id, StepStatus.RUNNING, "step.started")
+    call = session.store.create_tool_call(
+        run_id=session.run_id,
+        tool_name="read_file",
+        arguments={"file_path": str(tmp_path / "source.txt")},
+        risk_level=RiskLevel.READ_ONLY,
+        execution_kind=ExecutionKind.IN_PROCESS,
+        idempotent=True,
+        idempotency_key="active-read",
+        timeout_seconds=30,
+        step_id=step.id,
+    )
+    session.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, "tool.started")
+
+    with pytest.raises(ValueError, match="active work"):
+        session.finish(RunStatus.SUCCEEDED)
+
+    assert session.store.get_run(session.run_id).status is RunStatus.RUNNING
+    assert session.store.get_tool_call(call.id).status is ToolCallStatus.RUNNING
+    assert session.store.list_steps(session.run_id)[0].status is StepStatus.RUNNING
+
+
 def _configure_cli(monkeypatch, tmp_path, llm, *arguments):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.argv", ["corecoder", *arguments])
@@ -366,3 +400,60 @@ def test_interactive_session_stays_open_between_turns_and_finishes_on_exit(tmp_p
     with _database(tmp_path) as db:
         assert db.execute("SELECT status FROM runs").fetchall() == [("succeeded",)]
         assert db.execute("SELECT COUNT(*) FROM events WHERE type = 'run.completed'").fetchone() == (1,)
+
+
+def test_interactive_read_tool_interrupt_settles_runtime_and_next_turn_succeeds(
+    tmp_path, monkeypatch,
+):
+    class InterruptOnceReadTool(Tool):
+        name = "read_file"
+        description = "Interrupt once, then return a read result"
+        parameters: ClassVar[dict] = {
+            "type": "object",
+            "properties": {"file_path": {"type": "string"}},
+            "required": ["file_path"],
+        }
+
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, file_path: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                raise KeyboardInterrupt
+            return f"read recovered: {file_path}"
+
+    source = tmp_path / "source.txt"
+    source.write_text("runtime recovery\n", encoding="utf-8")
+    tool = InterruptOnceReadTool()
+    llm = ScriptedLLM([
+        LLMResponse(tool_calls=[ToolCall(
+            id="read-interrupted", name="read_file",
+            arguments={"file_path": str(source)},
+        )]),
+        LLMResponse(tool_calls=[ToolCall(
+            id="read-retried-by-user", name="read_file",
+            arguments={"file_path": str(source)},
+        )]),
+        LLMResponse(content="second turn completed"),
+    ])
+    _configure_cli(monkeypatch, tmp_path, llm)
+    monkeypatch.setattr(cli, "ALL_TOOLS", [tool])
+    inputs = iter(["first turn", "second turn", "quit"])
+    monkeypatch.setattr(cli, "pt_prompt", lambda *args, **kwargs: next(inputs))
+
+    cli.main()
+
+    with _database(tmp_path) as db:
+        assert db.execute("SELECT status FROM runs").fetchall() == [("succeeded",)]
+        assert db.execute(
+            "SELECT status FROM tool_calls ORDER BY created_at, id"
+        ).fetchall() == [("cancelled",), ("succeeded",)]
+        assert db.execute(
+            "SELECT status FROM steps ORDER BY sequence"
+        ).fetchall() == [("cancelled",), ("succeeded",)]
+        assert db.execute(
+            "SELECT COUNT(*) FROM tool_calls WHERE status IN "
+            "('created', 'waiting_approval', 'running')"
+        ).fetchone() == (0,)
+    assert tool.calls == 2

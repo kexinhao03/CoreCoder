@@ -246,6 +246,7 @@ class SQLiteStore:
                     "ADD COLUMN arguments_replayable INTEGER NOT NULL DEFAULT 1"
                 )
             self._scrub_legacy_tool_calls(connection)
+            self._scrub_legacy_approval_summaries(connection)
             step_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(steps)")
@@ -329,6 +330,38 @@ class SQLiteStore:
                         row["id"],
                     ),
                 )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    @staticmethod
+    def _scrub_legacy_approval_summaries(connection: sqlite3.Connection) -> None:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            rows = connection.execute(
+                """
+                SELECT approvals.id, approvals.arguments_summary,
+                       tool_calls.arguments_json
+                FROM approvals
+                JOIN tool_calls ON tool_calls.id = approvals.tool_call_id
+                WHERE approvals.tool_name = 'write_file'
+                ORDER BY approvals.id
+                """
+            ).fetchall()
+            for row in rows:
+                try:
+                    arguments = json.loads(row["arguments_json"])
+                except json.JSONDecodeError:
+                    arguments = {"arguments": {"redacted": True}}
+                if not isinstance(arguments, dict):
+                    arguments = {"arguments": {"redacted": True}}
+                safe_summary = summarize_arguments(arguments)
+                if safe_summary != row["arguments_summary"]:
+                    connection.execute(
+                        "UPDATE approvals SET arguments_summary = ? WHERE id = ?",
+                        (safe_summary, row["id"]),
+                    )
             connection.commit()
         except Exception:
             connection.rollback()
@@ -1558,6 +1591,35 @@ class SQLiteStore:
                 raise KeyError(f"run not found: {run_id}")
 
             ensure_run_transition(RunStatus(row["status"]), to_status)
+            if to_status is RunStatus.SUCCEEDED:
+                active_call = connection.execute(
+                    """
+                    SELECT 1 FROM tool_calls
+                    WHERE run_id = ? AND status IN (?, ?, ?)
+                    LIMIT 1
+                    """,
+                    (
+                        run_id,
+                        ToolCallStatus.CREATED.value,
+                        ToolCallStatus.WAITING_APPROVAL.value,
+                        ToolCallStatus.RUNNING.value,
+                    ),
+                ).fetchone()
+                active_step = connection.execute(
+                    """
+                    SELECT 1 FROM steps
+                    WHERE run_id = ? AND status IN (?, ?, ?)
+                    LIMIT 1
+                    """,
+                    (
+                        run_id,
+                        StepStatus.PENDING.value,
+                        StepStatus.RUNNING.value,
+                        StepStatus.WAITING_APPROVAL.value,
+                    ),
+                ).fetchone()
+                if active_call is not None or active_step is not None:
+                    raise ValueError("run has active work")
             started_at = row["started_at"]
             if to_status is RunStatus.RUNNING and started_at is None:
                 started_at = timestamp

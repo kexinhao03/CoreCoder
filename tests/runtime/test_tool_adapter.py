@@ -1,5 +1,9 @@
 """CoreCoder Agent tool calls can execute through the durable Runtime."""
 
+from pathlib import Path
+
+import pytest
+
 from corecoder import Agent
 from corecoder.demo import ScriptedLLM
 from corecoder.llm import LLMResponse, ToolCall
@@ -7,6 +11,8 @@ from corecoder.permissions import Permission
 from corecoder.runtime import (
     ApprovalDecision,
     ApprovalStatus,
+    RecoveryKind,
+    RecoveryManager,
     RuntimeExecutor,
     RuntimeToolAdapter,
     SQLiteStore,
@@ -91,9 +97,12 @@ def test_agent_read_and_approved_write_calls_flow_through_runtime(tmp_path):
     assert "approval.resolved" in event_types
 
 
-def test_runtime_wrapped_write_prompts_once_with_raw_arguments(tmp_path):
+@pytest.mark.parametrize("content", [
+    "private body\n",
+    "-----BEGIN PRIVATE KEY-----\ncredential body\n-----END PRIVATE KEY-----\n",
+])
+def test_runtime_wrapped_write_prompts_once_with_raw_arguments(tmp_path, content):
     target = tmp_path / "target.txt"
-    content = "private body\n"
     store = SQLiteStore(tmp_path / "runtime.sqlite")
     store.initialize()
     run = store.create_run(
@@ -150,8 +159,51 @@ def test_runtime_wrapped_write_prompts_once_with_raw_arguments(tmp_path):
     assert len(approvals) == 1
     assert approvals[0].status is ApprovalStatus.APPROVED
     assert approvals[0].decision is ApprovalDecision.ALLOW_ONCE
+    assert content not in approvals[0].arguments_summary
+    assert '"redacted": true' in approvals[0].arguments_summary
     assert adapter.manages_approval is True
     assert WriteFileTool().manages_approval is False
+
+
+def test_interrupted_write_is_uncertain_and_requires_reconciliation(tmp_path):
+    class InterruptingWriteTool(WriteFileTool):
+        def execute(self, file_path: str, content: str) -> str:
+            Path(file_path).write_text(content, encoding="utf-8")
+            raise KeyboardInterrupt
+
+    target = tmp_path / "effect.txt"
+    store = SQLiteStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    run = store.create_run(
+        goal="interrupt write",
+        workflow="corecoder_agent",
+        workspace=tmp_path,
+        model="scripted-demo",
+        prompt_version="runtime-adapter-v1",
+    )
+    store.transition_run(run.id, RunStatus.RUNNING, "run.started")
+    registry = ToolPolicyRegistry.with_builtin_defaults()
+    adapter = RuntimeToolAdapter(
+        InterruptingWriteTool(),
+        store,
+        RuntimeExecutor(store, registry),
+        run.id,
+        approval_handler=lambda approval, arguments: ApprovalDecision.ALLOW_ONCE,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        adapter.execute(file_path=str(target), content="effect happened once\n")
+
+    [call] = store.list_tool_calls(run.id)
+    [step] = store.list_steps(run.id)
+    [candidate] = RecoveryManager(store, registry).scan(run.id)
+    assert target.read_text(encoding="utf-8") == "effect happened once\n"
+    assert call.status is ToolCallStatus.INTERRUPTED
+    assert step.status is StepStatus.FAILED
+    assert store.get_run(run.id).status is RunStatus.RECOVERABLE
+    assert candidate.call.id == call.id
+    assert candidate.kind is RecoveryKind.HUMAN_REQUIRED
+    assert store.list_tool_calls(run.id) == [call]
 
 
 def test_plan_mode_blocks_runtime_adapter_before_runtime_submission(tmp_path):

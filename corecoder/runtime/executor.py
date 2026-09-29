@@ -222,7 +222,7 @@ class RuntimeExecutor:
             if policy.requires_approval:
                 approval = self._store.request_approval(
                     call.id,
-                    arguments_summary=summarize_arguments(arguments),
+                    arguments_summary=summarize_arguments(call.arguments),
                     workspace=run.workspace,
                     risk_reason=policy.risk_level.value,
                     approval_id=approval_id,
@@ -308,6 +308,24 @@ class RuntimeExecutor:
                 except Exception as error:  # noqa: BLE001 - persist callable failures, not BaseException
                     output = str(error)
                     failure_kind = FailureKind.EXECUTION_ERROR
+                except BaseException as error:
+                    if policy.risk_level is RiskLevel.READ_ONLY:
+                        interruption_kind = FailureKind.CANCELLED
+                        status, event = ToolCallStatus.CANCELLED, "tool.cancelled"
+                    else:
+                        interruption_kind = FailureKind.TERMINATION_UNKNOWN
+                        status, event = ToolCallStatus.INTERRUPTED, "tool.interrupted"
+                    self._store.transition_tool_call(
+                        call.id,
+                        status,
+                        event,
+                        result_summary=type(error).__name__,
+                        payload={
+                            "failure_kind": interruption_kind.value,
+                            "reason": "execution_interrupted",
+                        },
+                    )
+                    raise
             if cancellation.is_set():
                 failure_kind = FailureKind.CANCELLED
         finally:

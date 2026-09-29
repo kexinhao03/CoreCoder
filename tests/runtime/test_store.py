@@ -157,6 +157,82 @@ def test_initialize_scrubs_legacy_tool_call_raw_cells(tmp_path):
     assert replayable == 0
 
 
+def _legacy_write_approval(store, tmp_path, suffix):
+    run_id = f"legacy-run-{suffix}"
+    call_id = f"legacy-call-{suffix}"
+    approval_id = f"legacy-approval-{suffix}"
+    content = f"ordinary private body {suffix}"
+    store.create_run(
+        goal="legacy approval scrub",
+        workflow="corecoder_agent",
+        workspace=tmp_path,
+        model="legacy-model",
+        prompt_version="legacy-v1",
+        run_id=run_id,
+    )
+    store.transition_run(run_id, RunStatus.RUNNING, "run.started")
+    store.create_tool_call(
+        run_id=run_id,
+        tool_name="write_file",
+        arguments={"file_path": str(tmp_path / f"{suffix}.txt"), "content": content},
+        risk_level=RiskLevel.MUTATING,
+        execution_kind=ExecutionKind.IN_PROCESS,
+        idempotent=False,
+        idempotency_key=None,
+        timeout_seconds=30,
+        tool_call_id=call_id,
+    )
+    store.request_approval(
+        call_id,
+        arguments_summary=(
+            '{"content": "' + content + '", "file_path": "' + str(tmp_path / f"{suffix}.txt") + '"}'
+        ),
+        workspace=str(tmp_path),
+        risk_reason="mutating",
+        approval_id=approval_id,
+    )
+    return approval_id, content
+
+
+def test_initialize_scrubs_legacy_write_approval_summary(tmp_path):
+    store = SQLiteStore(tmp_path / "legacy-approval.db")
+    store.initialize()
+    approval_id, content = _legacy_write_approval(store, tmp_path, "one")
+
+    store.initialize()
+
+    approval = store.get_approval(approval_id)
+    assert content not in approval.arguments_summary
+    assert '"redacted": true' in approval.arguments_summary
+    assert '"sha256"' in approval.arguments_summary
+
+
+def test_legacy_write_approval_scrub_rolls_back_all_rows_on_failure(tmp_path):
+    store = SQLiteStore(tmp_path / "legacy-approval-rollback.db")
+    store.initialize()
+    first_id, first_content = _legacy_write_approval(store, tmp_path, "a")
+    second_id, second_content = _legacy_write_approval(store, tmp_path, "b")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            f"""
+            CREATE TRIGGER reject_second_approval_scrub
+            BEFORE UPDATE OF arguments_summary ON approvals
+            WHEN OLD.id = '{second_id}'
+            BEGIN SELECT RAISE(ABORT, 'injected approval scrub failure'); END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected approval scrub failure"):
+        store.initialize()
+
+    with sqlite3.connect(store.path) as connection:
+        summaries = dict(connection.execute(
+            "SELECT id, arguments_summary FROM approvals ORDER BY id"
+        ).fetchall())
+    assert first_content in summaries[first_id]
+    assert second_content in summaries[second_id]
+
+
 def test_initialize_migrates_legacy_steps_without_inventing_identity(tmp_path):
     database = tmp_path / "legacy.db"
     with sqlite3.connect(database) as connection:

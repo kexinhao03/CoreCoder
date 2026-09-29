@@ -53,13 +53,17 @@ class RuntimeToolAdapter(Tool):
             title=self.name,
         )
         self._store.transition_step(step.id, StepStatus.RUNNING, "step.started")
-        result = self._executor.submit_in_process(
-            self._run_id,
-            self.name,
-            kwargs,
-            self._execute_tool,
-            step_id=step.id,
-        )
+        try:
+            result = self._executor.submit_in_process(
+                self._run_id,
+                self.name,
+                kwargs,
+                self._execute_tool,
+                step_id=step.id,
+            )
+        except BaseException:
+            self._settle_interrupted_step(step.id)
+            raise
         if isinstance(result, PendingApproval):
             self._store.transition_step(
                 step.id,
@@ -82,14 +86,33 @@ class RuntimeToolAdapter(Tool):
                 StepStatus.RUNNING,
                 "step.resumed",
             )
-            result = self._executor.execute_approved_in_process(
-                result.call.id,
-                self._execute_tool,
-            )
+            try:
+                result = self._executor.execute_approved_in_process(
+                    result.call.id,
+                    self._execute_tool,
+                )
+            except BaseException:
+                self._settle_interrupted_step(step.id)
+                raise
         return self._finish_step(step.id, result)
 
     def _execute_tool(self, arguments: dict, _cancellation) -> str:
         return self._tool.execute(**arguments)
+
+    def _settle_interrupted_step(self, step_id: str) -> None:
+        calls = [
+            call for call in self._store.list_tool_calls(run_id=self._run_id)
+            if call.step_id == step_id
+        ]
+        if not calls:
+            return
+        if calls[-1].status is ToolCallStatus.CANCELLED:
+            status = StepStatus.CANCELLED
+        elif calls[-1].status is ToolCallStatus.INTERRUPTED:
+            status = StepStatus.FAILED
+        else:
+            return
+        self._store.transition_step(step_id, status, f"step.{status.value}")
 
     def _finish_step(self, step_id: str, result: RuntimeResult) -> str:
         if result.call.status is ToolCallStatus.SUCCEEDED:

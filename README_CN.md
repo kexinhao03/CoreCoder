@@ -6,32 +6,32 @@
 
 *fork 基线 · 检查 Runtime · 只按证据扩展*
 
-中文 | [English](README.md) | [配套源码导读 · 八篇双语](article/)
+中文 | [English](README.md) | [上游源码导读 · 八篇双语](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 
 [![PyPI：上游 CoreCoder](https://img.shields.io/pypi/v/corecoder?label=PyPI%20上游%20CoreCoder)](https://pypi.org/project/corecoder/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions)
-[![engine](https://img.shields.io/badge/engine-1175_LoC-blue)](article/)
-[![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](article/)
+[![engine](https://img.shields.io/badge/engine-1175_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
+[![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 
 </div>
 
 此维护 Fork 由 [kexinhao03](https://github.com/kexinhao03) 负责，仓库为
 [kexinhao03/CoreCoder](https://github.com/kexinhao03/CoreCoder)。它保留
-[he-yufeng/CoreCoder](https://github.com/he-yufeng/CoreCoder) 的上游基线，并明确归功于原作者
+[he-yufeng/CoreCoder 固定提交 `069948d180cb0ceb1a6d7aafeb0e141c166a009d`](https://github.com/he-yufeng/CoreCoder/commit/069948d180cb0ceb1a6d7aafeb0e141c166a009d) 的上游基线，并明确归功于原作者
 [Yufeng He](https://github.com/he-yufeng)。原始源码导读和演示素材仍属于上游作品，链接有意继续指向该来源。
 
 ## 上游与贡献边界
 
 | 范围 | 交付边界与事实来源 |
 | --- | --- |
-| 上游基线 | CoreCoder 原始 Agent、文章与素材持续归因于 [he-yufeng/CoreCoder](https://github.com/he-yufeng/CoreCoder)。 |
+| 上游基线 | CoreCoder 原始 Agent、文章与素材固定于上游提交 [`069948d180cb0ceb1a6d7aafeb0e141c166a009d`](https://github.com/he-yufeng/CoreCoder/commit/069948d180cb0ceb1a6d7aafeb0e141c166a009d)。本地仅设置 `.gitignore` 的提交为 `c45968d527944386015750f98bcd76ef91277576`；其子提交 `da7ad0fdcca4e392b2bbc01419fe4cb510a8fec5` 是首个 ReliAgent 提交。 |
 | Runtime | 此 Fork 加入 Runtime；默认 Agent 路径只将 `read_file` 和 `write_file` 包装进 Runtime，其他 Agent 工具尚未 Runtime 化。 |
 | Recovery CLI | `reliagent` CLI 暴露固定 workflow 的恢复与对账，并非交互式 Agent 的恢复入口。 |
 | 评测 | 结果比较三个 **Runtime 配置**：`no_retry_no_recovery`、`full`、`no_recovery`，并非外部 baseline。 |
 | ML workflow | 当前只有一个确定性本地 workflow；第二个 workflow 尚未实现。 |
-| 证据目录 | [当前 P0 证据](evidence/reliagent/980cd5d/) 对应 Runtime `980cd5d`；`c724f8a` 保留为 legacy、已 superseded 快照。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
+| 证据目录 | `980cd5d` 与 `c724f8a` 都是历史、已 superseded 快照。审批摘要脱敏与中断结算修复只在新的 Runtime Commit 冻结后评测，紧随其后的证据 Commit 再链接以该 SHA 命名的新目录。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
 
 请在此 Fork 提交问题与变更：[kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues)。
 
@@ -43,7 +43,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1175 行 / 整包 8962 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 1175 行 / 整包 9065 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -54,14 +54,14 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1175 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 64 个文件、物理 10036 行、净 8962 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
+引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1175 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 64 个文件、物理 10141 行、净 9065 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
 
-它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；默认有 467 个测试通过，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；当前全量测试结果随已检入的 Runtime 证据记录，不在概览里冻结一个会过期的数字，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
 <p align="center">
-  <img src="assets/demo-plan-hooks.gif" width="760"
+  <img src="https://raw.githubusercontent.com/he-yufeng/CoreCoder/069948d180cb0ceb1a6d7aafeb0e141c166a009d/assets/demo-plan-hooks.gif" width="760"
        alt="plan mode 实战：agent 先读 fib.py，写入被 plan mode 拦下，先给计划；批准之后才动手改文件、跑测试，Pre/PostToolUse hooks 在每次调用前后触发">
 </p>
 
@@ -164,14 +164,14 @@ def chat(self, user_input):
 
 我还写了一套双语源码导读，一篇导言加七篇正文，每篇都配英文镜像（`_EN.md`）。它对着 CoreCoder 的真实代码，讲 Claude Code 这类 agent 的内部构造。有一条给自己立的硬规矩：每一处行数、每一段代码都从仓库里现读现核，绝不凭印象编。前六篇带你读懂，第七篇带你 fork，哪篇先读都行。
 
-- **[导言 · 用 CoreCoder 读懂 Claude Code，再造一个你自己的](article/00-index.md)**
-- **[01 一个 agent 的本体，是一个 while 循环](article/01-the-loop.md)** — `agent.py` 的主循环、打断与轮次上限
-- **[02 工具系统：让模型安全地动手](article/02-tools.md)** — `tools/` 七个工具与 bash 安全闸
-- **[03 接入任意大模型，顺便把账算清楚](article/03-llm-and-cost.md)** — `llm.py` 的 provider 包装、重试与成本统计
-- **[04 用有限的窗口扛住一个长任务](article/04-context.md)** — `context.py` 的三层压缩与孤儿 tool 消息
-- **[05 并行执行与子 agent](article/05-parallel-and-subagents.md)** — 线程池并发与子 agent 隔离
-- **[06 把它跑成一个真正的命令行工具](article/06-session-and-cli.md)** — `session.py` 与路径穿越防护
-- **[07 Fork CoreCoder，搭一个你自己的 coding agent](article/07-build-your-own.md)** — 从 fork 到加自定义工具到换模型
+- **[导言 · 用 CoreCoder 读懂 Claude Code，再造一个你自己的](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)**
+- **[01 一个 agent 的本体，是一个 while 循环](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/01-the-loop.md)** — `agent.py` 的主循环、打断与轮次上限
+- **[02 工具系统：让模型安全地动手](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/02-tools.md)** — `tools/` 七个工具与 bash 安全闸
+- **[03 接入任意大模型，顺便把账算清楚](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/03-llm-and-cost.md)** — `llm.py` 的 provider 包装、重试与成本统计
+- **[04 用有限的窗口扛住一个长任务](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/04-context.md)** — `context.py` 的三层压缩与孤儿 tool 消息
+- **[05 并行执行与子 agent](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/05-parallel-and-subagents.md)** — 线程池并发与子 agent 隔离
+- **[06 把它跑成一个真正的命令行工具](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/06-session-and-cli.md)** — `session.py` 与路径穿越防护
+- **[07 Fork CoreCoder，搭一个你自己的 coding agent](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/07-build-your-own.md)** — 从 fork 到加自定义工具到换模型
 
 ## Fork 它，造个更好的
 
@@ -282,6 +282,8 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 `corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。默认 Agent 循环只通过 `RuntimeToolAdapter` 接入内建 `read_file` 和需要审批的 `write_file`；独立的 `reliagent` CLI 负责固定 workflow 的恢复与对账。其他 Agent 工具尚未 Runtime 化。
 
+一个 Runtime Run 同时只允许一个活动 ToolCall。同一会话中的 `write_file` 会在提交、审批和执行的完整生命周期上串行化；`read_file` 有意不占用写入闸。因此同一个 Run 内并行的 `read_file`/`read_file` 与 `read_file`/`write_file` 批次**不受支持**：竞争者可能收到 `run already has an active tool call`。需要并发时应拆成独立 Run；本版本不声称支持 Runtime 管理的并行读。
+
 机器学习实验是建立在同一个 RuntimeExecutor 上的唯一确定性本地 workflow：检查固定本地数据集，在外部效果实验前等待审批，执行确定性普通最小二乘，验证唯一 Effect Marker，再生成报告。全过程不使用网络服务，也不增加依赖；第二个 workflow 仍 deferred。
 
 求职展示可以直接运行这份 [3—5 分钟 Demo](docs/reliagent/demo.md)：
@@ -290,10 +292,7 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 sh scripts/reliagent_ml_demo.sh
 ```
 
-[架构图与状态机](docs/reliagent/architecture.md) 与[简历表述边界](docs/reliagent/resume-evidence.md)说明当前范围。仓库内的
-[Raw JSON 与 Markdown 证据包](evidence/reliagent/980cd5d/) 对应 Runtime Commit
-`980cd5dea37146d499e14cdab96aea7bd42083ac`：ML 24/24、phase3 90/90 场景契约通过，manifest 保留精确命令和文件哈希。
-`c724f8a` 继续保留为 legacy、已 superseded 的历史快照。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred，不声称 strict-v2 完成。
+[架构图与状态机](docs/reliagent/architecture.md) 与[简历表述边界](docs/reliagent/resume-evidence.md)说明当前范围。`980cd5d` 与 `c724f8a` 证据目录在审批摘要脱敏与中断结算修复后均作为历史、已 superseded 快照保留。下一个证据 Commit 会从冻结的 Runtime SHA 重新生成，并记录精确命令、场景计数、文件哈希和全量测试结果。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred，不声称 strict-v2 完成。
 
 ```mermaid
 flowchart LR

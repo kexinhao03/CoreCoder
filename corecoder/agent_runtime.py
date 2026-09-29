@@ -68,6 +68,8 @@ class AgentRuntimeSession:
         run = self.store.get_run(self.run_id)
         if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
             return run
+        if run.status is RunStatus.RECOVERABLE and status is RunStatus.SUCCEEDED:
+            return run
         if status is RunStatus.CANCELLED:
             return self.executor.cancel_run(self.run_id)
         event = {RunStatus.SUCCEEDED: "run.completed", RunStatus.FAILED: "run.failed"}[status]
