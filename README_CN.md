@@ -11,7 +11,7 @@
 [![PyPI：上游 CoreCoder](https://img.shields.io/pypi/v/corecoder?label=PyPI%20上游%20CoreCoder)](https://pypi.org/project/corecoder/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions)
+[![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml)
 [![engine](https://img.shields.io/badge/engine-1175_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 [![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 
@@ -31,7 +31,7 @@
 | Recovery CLI | `reliagent` CLI 暴露固定 workflow 的恢复与对账，并非交互式 Agent 的恢复入口。 |
 | 评测 | 结果比较三个 **Runtime 配置**：`no_retry_no_recovery`、`full`、`no_recovery`，并非外部 baseline。 |
 | ML workflow | 当前只有一个确定性本地 workflow；第二个 workflow 尚未实现。 |
-| 证据目录 | [`8a269a3`](evidence/reliagent/8a269a3/) 是当前快照，评测冻结的 Runtime Commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c`：ML 24/24、phase3 90/90 场景契约通过。`df76ce3`、`980cd5d` 与 `c724f8a` 均为历史、已 superseded 快照。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
+| 证据目录 | [`8a269a3`](evidence/reliagent/8a269a3/) 是当前快照，评测冻结的 Runtime Commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c`：ML 24/24、phase3 90/90 场景契约通过。`df76ce3`、`980cd5d` 与 `c724f8a` 均为历史、已 superseded 快照。本地打包验收现已覆盖隔离构建、`twine check`、全新环境 wheel 安装、两个 CLI help 与安装后 ML 评测 24/24；P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
 
 请在此 Fork 提交问题与变更：[kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues)。
 
@@ -43,7 +43,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1175 行 / 整包 9083 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 1175 行 / 整包 9100 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -54,7 +54,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1175 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 64 个文件、物理 10161 行、净 9083 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
+引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1175 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 64 个文件、物理 10181 行、净 9100 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
 
 它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；当前全量测试结果随已检入的 Runtime 证据记录，不在概览里冻结一个会过期的数字，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
@@ -292,7 +292,7 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 sh scripts/reliagent_ml_demo.sh
 ```
 
-[架构图与状态机](docs/reliagent/architecture.md)、[简历表述边界](docs/reliagent/resume-evidence.md)与当前 [`8a269a3` 证据](evidence/reliagent/8a269a3/)说明当前范围。该证据评测冻结的 Runtime Commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c`，并记录精确命令、ML 24/24 与 phase3 90/90 场景契约通过数、文件哈希和测试结果。`df76ce3`、`980cd5d` 与 `c724f8a` 目录保留为历史、已 superseded 快照。打包检查因缺少构建工具阻塞；P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred，不声称 strict-v2 完成。
+[架构图与状态机](docs/reliagent/architecture.md)、[简历表述边界](docs/reliagent/resume-evidence.md)与当前 [`8a269a3` 证据](evidence/reliagent/8a269a3/)说明当前范围。该证据评测冻结的 Runtime Commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c`，并记录精确命令、ML 24/24 与 phase3 90/90 场景契约通过数、文件哈希和测试结果。`df76ce3`、`980cd5d` 与 `c724f8a` 目录保留为历史、已 superseded 快照。本地打包验收现已覆盖隔离构建、`twine check`、全新环境 wheel 安装、两个 CLI help 与安装后 ML 评测 24/24；P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred，不声称 strict-v2 完成。
 
 ```mermaid
 flowchart LR

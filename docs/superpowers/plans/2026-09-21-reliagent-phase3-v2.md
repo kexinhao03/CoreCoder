@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10+, standard library (`argparse`, `dataclasses`, `json`, `tempfile`, `pathlib`), SQLite, pytest, Ruff.
 
-**Spec:** User-provided `/Users/haokexin/Downloads/ReliAgent-Phase3-Trace-Evaluation-Design-v2.md`; it supersedes the narrower Phase 3 scope in `docs/superpowers/specs/2026-09-21-reliagent-phase3-trace-eval-design.md` where they conflict.
+**Spec:** The user-provided v2 design supersedes the narrower repository history in `docs/superpowers/specs/2026-09-21-reliagent-phase3-trace-eval-design.md` where they conflict.
 
 ## Global Constraints
 

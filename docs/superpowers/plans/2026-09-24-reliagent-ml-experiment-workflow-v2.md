@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10+ standard library, SQLite, argparse, subprocess, pytest, Ruff; no new dependency or network access.
 
-**Spec:** `/Users/haokexin/Downloads/ReliAgent-Lightweight-ML-Workflow-Design-v2.md` (user-supplied authoritative v2); repository design history: `docs/superpowers/specs/2026-09-24-reliagent-ml-experiment-workflow-design.md`.
+**Spec:** The user-supplied authoritative v2 design; repository design history: `docs/superpowers/specs/2026-09-24-reliagent-ml-experiment-workflow-design.md`.
 
 ## Global Constraints
 

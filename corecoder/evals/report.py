@@ -1,11 +1,14 @@
 """Persist raw evaluation evidence and render it without database access."""
 
 import json
+import os
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 
 from .models import EvaluationResult
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 _EFFECT_SCENARIOS = {
     "effect_persist_failure",
@@ -74,13 +77,30 @@ def _summary(results: Sequence[EvaluationResult]) -> dict:
     }
 
 
+def _portable_paths(value):
+    if isinstance(value, str):
+        root = str(_REPOSITORY_ROOT)
+        for separator in {os.sep, "/", "\\"}:
+            value = value.replace(f"{root}{separator}", "")
+        escaped_root = root.replace("\\", "\\\\")
+        value = value.replace(f"{escaped_root}\\\\", "")
+        return value.replace(root, ".").replace(escaped_root, ".")
+    if isinstance(value, dict):
+        return {key: _portable_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_portable_paths(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_portable_paths(item) for item in value)
+    return value
+
+
 def write_raw_result(results: Sequence[EvaluationResult], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "evaluation-results.json"
     report = {
         "schema_version": "reliagent.eval.v1",
         "summary": _summary(results),
-        "results": [asdict(result) for result in results],
+        "results": [_portable_paths(asdict(result)) for result in results],
     }
     path.write_text(
         json.dumps(report, sort_keys=True, indent=2),

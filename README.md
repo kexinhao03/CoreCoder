@@ -11,7 +11,7 @@
 [![PyPI: upstream CoreCoder](https://img.shields.io/pypi/v/corecoder?label=PyPI%20upstream%20CoreCoder)](https://pypi.org/project/corecoder/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions)
+[![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml)
 [![engine](https://img.shields.io/badge/engine-1175_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index_EN.md)
 [![essays](https://img.shields.io/badge/source--reading-8_bilingual-orange)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index_EN.md)
 
@@ -33,7 +33,7 @@ links intentionally continue to point to that source.
 | Recovery CLI | The `reliagent` CLI exposes fixed workflow recovery and reconciliation; it is not an interactive-Agent recovery surface. |
 | Evaluation | Results compare three **Runtime configurations**—`no_retry_no_recovery`, `full`, and `no_recovery`—not an external baseline. |
 | ML workflow | One deterministic local workflow is present. A second workflow remains deferred. |
-| Evidence directories | [`8a269a3`](evidence/reliagent/8a269a3/) is the current snapshot and evaluates frozen Runtime commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c`: 24/24 ML and 90/90 phase3 scenario contracts passed. `df76ce3`, `980cd5d` and `c724f8a` are historical, superseded snapshots. Packaging checks are blocked by missing build tools. P1 Metrics/Trace provenance and an external baseline remain deferred. |
+| Evidence directories | [`8a269a3`](evidence/reliagent/8a269a3/) is the current snapshot and evaluates frozen Runtime commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c`: 24/24 ML and 90/90 phase3 scenario contracts passed. `df76ce3`, `980cd5d` and `c724f8a` are historical, superseded snapshots. Local packaging acceptance now covers isolated build, `twine check`, clean-wheel installation, both CLI help entries, and a 24/24 installed-wheel ML evaluation. P1 Metrics/Trace provenance and an external baseline remain deferred. |
 
 Please file changes and issues in this fork: [kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues).
 
@@ -45,7 +45,7 @@ Please file changes and issues in this fork: [kexinhao03/CoreCoder issues](https
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| Lines of code | ~1,175 engine / 9,083 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
+| Lines of code | ~1,175 engine / 9,100 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
 | Time to read it all | one afternoon | can't (closed) | a few days of slogging | one afternoon |
 | Breakpoint, change, rerun? | yes, every line | no | yes, but there's a lot | yes |
 | What it's for | understand one, then fork your own | production coding assistant | terminal pair-programming | minimal GPT for teaching |
@@ -56,7 +56,7 @@ The nanoGPT column is there as a reference point: minimal, readable, but it teac
 
 I've always felt coding agents get talked about as if they were arcane. Strip a tool like Claude Code or Cursor all the way down and the core is a `while` loop wrapped around a large model, plus seven or eight tools that let it actually do things. The hard part was never the loop; it's everything the loop has to cope with once it meets the real world. CoreCoder is the minimal version that writes that core out honestly.
 
-The engine (loop, model interface, context, tools, sessions) is 1,175 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole committed package is 64 files: 10,161 physical lines, 9,083 net. These values use the `tests/test_core.py` source-of-truth calculation: the engine is `agent.py`, `llm.py`, `context.py`, `session.py`, and `corecoder/tools/*.py`; package totals are all `corecoder/**/*.py` files. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime and ML workflow, each documented below.
+The engine (loop, model interface, context, tools, sessions) is 1,175 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole committed package is 64 files: 10,181 physical lines, 9,100 net. These values use the `tests/test_core.py` source-of-truth calculation: the engine is `agent.py`, `llm.py`, `context.py`, `session.py`, and `corecoder/tools/*.py`; package totals are all `corecoder/**/*.py` files. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime and ML workflow, each documented below.
 
 And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. The current full-suite result is recorded with the checked-in Runtime evidence instead of freezing a count in this overview; one live-model integration test is opt-in. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
@@ -301,7 +301,9 @@ See the [architecture and state machines](docs/reliagent/architecture.md),
 commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c` and records exact commands,
 24/24 ML and 90/90 phase3 scenario-contract passes, file hashes, and test
 results. The `df76ce3`, `980cd5d` and `c724f8a` directories remain historical
-and superseded. Packaging checks are blocked by missing build tools; P1
+and superseded. Local packaging acceptance now covers isolated build,
+`twine check`, clean-wheel installation, both CLI help entries, and a 24/24
+installed-wheel ML evaluation. P1
 Metrics/Trace provenance and an external baseline comparison remain deferred,
 with no strict-v2 completion claim.
 
