@@ -21,8 +21,8 @@ deferred, so no resume bullet should imply that they have shipped.
 
 ## Current P0 snapshot
 
-[Runtime `8a269a3` evidence](../../evidence/reliagent/8a269a3/) evaluates full
-commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c`. Real CLI runs produced
+[Runtime `a7579ac` evidence](../../evidence/reliagent/a7579ac/) evaluates full
+commit `a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd`. Real CLI runs produced
 24/24 ML and 90/90 phase3 scenario-contract passes across the three named
 configurations. Each suite uses the same case input and fault schedule across
 configurations; the generated Raw JSON and Markdown are unchanged, with exact
@@ -34,21 +34,18 @@ one effect marker after reconciliation. These counts include expected failures
 and refusals; they are not a claim of 100% task success. The evidence commit
 changes no `corecoder/` source relative to the evaluated Runtime commit.
 
-Packaging acceptance remains blocked because existing interpreters lack
-`build`, `twine` and `hatchling`; no dependency was installed. This snapshot
-does not establish strict-v2 completion or an arbitrary exactly-once guarantee.
+Packaging acceptance built the sdist and wheel in an isolated environment,
+passed `twine check`, installed the wheel in a new virtual environment, ran
+both CLI help entries, and ran the installed-wheel ML evaluation with 24/24
+scenario contracts. This snapshot does not establish strict-v2 completion or
+an arbitrary exactly-once guarantee.
 
 ## Historical material is not a current claim
 
-`evidence/reliagent/df76ce3/`, `evidence/reliagent/980cd5d/` and
-`evidence/reliagent/c724f8a/`, evaluating commits
-`df76ce390796a59636300b789682d9a63312f9fd`,
-`980cd5dea37146d499e14cdab96aea7bd42083ac` and
-`c724f8a4bc45c8ad900040f46fd306d78039279a`, are superseded snapshot evidence.
-Their checked-in Raw JSON, Markdown reports, and recorded `90 / 90` and
-`24 / 24` scenario-contract counts may be inspected as history, but must not be
-presented as validation of current source, a current external baseline, or
-strict-v2 completion.
+Superseded snapshots remain recoverable from Git history, but were removed
+from the current tree because their Raw JSON exposed workstation-specific
+absolute paths. They must not be presented as validation of current source, a
+current external baseline, or strict-v2 completion.
 
 The legacy local fixture's duplicate-effect observation was limited to its
 Effect Marker; it was never a guarantee for arbitrary tools or services.
@@ -59,4 +56,4 @@ Use the checked-in tests and the current fixed-workflow CLI to verify current
 behavior. Do not use `git diff --exit-code` against either superseded commit as
 proof that current Runtime source is identical to a historical snapshot. For
 this P0 snapshot, the appropriate source-identity check is
-`git diff --exit-code 8a269a3d5da9eaef54a696854f784d1c68f80e1c -- corecoder`.
+`git diff --exit-code a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd -- corecoder`.

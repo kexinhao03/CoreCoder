@@ -63,9 +63,10 @@ stateDiagram-v2
 - Runtime token and cost remain unavailable because Run-scoped LLM telemetry is
   not persisted.
 
-## Legacy evidence
+## Evidence history
 
-`evidence/reliagent/c724f8a/` and commit
-`c724f8a4bc45c8ad900040f46fd306d78039279a` are legacy, superseded snapshot
-material. They remain available for historical inspection, not as a statement
-that the current source or delivery boundary is identical.
+The current snapshot is `evidence/reliagent/a7579ac/`. Superseded generated
+snapshots remain recoverable from Git history, but were removed from the
+current tree because their Raw JSON exposed workstation-specific absolute
+paths. Historical snapshots are not statements about the current source or
+delivery boundary.

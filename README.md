@@ -33,7 +33,7 @@ links intentionally continue to point to that source.
 | Recovery CLI | The `reliagent` CLI exposes fixed workflow recovery and reconciliation; it is not an interactive-Agent recovery surface. |
 | Evaluation | Results compare three **Runtime configurations**—`no_retry_no_recovery`, `full`, and `no_recovery`—not an external baseline. |
 | ML workflow | One deterministic local workflow is present. A second workflow remains deferred. |
-| Evidence directories | [`8a269a3`](evidence/reliagent/8a269a3/) is the current snapshot and evaluates frozen Runtime commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c`: 24/24 ML and 90/90 phase3 scenario contracts passed. `df76ce3`, `980cd5d` and `c724f8a` are historical, superseded snapshots. Local packaging acceptance now covers isolated build, `twine check`, clean-wheel installation, both CLI help entries, and a 24/24 installed-wheel ML evaluation. P1 Metrics/Trace provenance and an external baseline remain deferred. |
+| Evidence | [`a7579ac`](evidence/reliagent/a7579ac/) is the current snapshot and evaluates frozen Runtime commit `a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd`: 24/24 ML and 90/90 phase3 scenario contracts passed. Local packaging acceptance covers isolated build, `twine check`, clean-wheel installation, both CLI help entries, and a 24/24 installed-wheel ML evaluation. P1 Metrics/Trace provenance and an external baseline remain deferred. |
 
 Please file changes and issues in this fork: [kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues).
 
@@ -297,11 +297,10 @@ sh scripts/reliagent_ml_demo.sh
 
 See the [architecture and state machines](docs/reliagent/architecture.md),
 [resume-claim boundary](docs/reliagent/resume-evidence.md), and current
-[`8a269a3` evidence](evidence/reliagent/8a269a3/). It evaluates frozen Runtime
-commit `8a269a3d5da9eaef54a696854f784d1c68f80e1c` and records exact commands,
+[`a7579ac` evidence](evidence/reliagent/a7579ac/). It evaluates frozen Runtime
+commit `a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd` and records exact commands,
 24/24 ML and 90/90 phase3 scenario-contract passes, file hashes, and test
-results. The `df76ce3`, `980cd5d` and `c724f8a` directories remain historical
-and superseded. Local packaging acceptance now covers isolated build,
+results. Local packaging acceptance covers isolated build,
 `twine check`, clean-wheel installation, both CLI help entries, and a 24/24
 installed-wheel ML evaluation. P1
 Metrics/Trace provenance and an external baseline comparison remain deferred,

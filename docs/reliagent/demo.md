@@ -36,9 +36,7 @@ Set `PYTHON_BIN` when the repository virtual environment is not at `.venv`.
    `duplicate_effect=false`.
 6. **Evaluation evidence — 30 seconds.** Open
    the current SHA-keyed evidence directory linked from `README.md`, then point
-   to `ml-workflow-report.md`, its Raw JSON, and the manifest digest. The older
-   `df76ce3`, `980cd5d` and `c724f8a` directories are superseded historical
-   snapshots.
+   to `ml-workflow-report.md`, its Raw JSON, and the manifest digest.
    Explain that 24/24 is scenario-contract correctness, not 24 successful tasks.
 
 The last stdout line is a machine-readable JSON summary. A successful run must

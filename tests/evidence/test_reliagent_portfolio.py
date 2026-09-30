@@ -15,20 +15,8 @@ from corecoder.evals.suites.ml_workflow import ml_workflow_configurations, ml_wo
 from corecoder.evals.suites.phase3 import phase3_configurations, phase3_suite
 
 ROOT = Path(__file__).resolve().parents[2]
-EVIDENCE = ROOT / "evidence" / "reliagent" / "8a269a3"
-EVALUATED_COMMIT = "8a269a3d5da9eaef54a696854f784d1c68f80e1c"
-SUPERSEDED_EVIDENCE = (
-    (
-        ROOT / "evidence" / "reliagent" / "df76ce3",
-        "df76ce390796a59636300b789682d9a63312f9fd",
-    ),
-    (
-        ROOT / "evidence" / "reliagent" / "980cd5d",
-        "980cd5dea37146d499e14cdab96aea7bd42083ac",
-    ),
-)
-LEGACY_EVIDENCE = ROOT / "evidence" / "reliagent" / "c724f8a"
-LEGACY_EVALUATED_COMMIT = "c724f8a4bc45c8ad900040f46fd306d78039279a"
+EVIDENCE = ROOT / "evidence" / "reliagent" / "a7579ac"
+EVALUATED_COMMIT = "a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd"
 
 
 def test_current_evidence_manifest_binds_exact_runtime_and_generated_files():
@@ -36,8 +24,8 @@ def test_current_evidence_manifest_binds_exact_runtime_and_generated_files():
     assert manifest["schema_version"] == "reliagent.evidence.v1"
     assert manifest["evaluated_commit"] == EVALUATED_COMMIT
     assert manifest["generated_with"] == [
-        ".venv/bin/python -m corecoder.reliagent_cli eval ml_workflow --output /tmp/reliagent-p0-wave2.5WO50I/ml_workflow",
-        ".venv/bin/python -m corecoder.reliagent_cli eval phase3 --output /tmp/reliagent-p0-wave2.5WO50I/phase3",
+        ".venv/bin/python -m corecoder.reliagent_cli eval ml_workflow --output /tmp/reliagent-release-evidence.Ya7rKx/ml_workflow",
+        ".venv/bin/python -m corecoder.reliagent_cli eval phase3 --output /tmp/reliagent-release-evidence.Ya7rKx/phase3",
     ]
     assert set(manifest["sha256"]) == {
         "ml-workflow-results.json", "ml-workflow-report.md",
@@ -45,6 +33,12 @@ def test_current_evidence_manifest_binds_exact_runtime_and_generated_files():
     }
     for filename, expected in manifest["sha256"].items():
         assert hashlib.sha256((EVIDENCE / filename).read_bytes()).hexdigest() == expected
+
+
+def test_current_evidence_contains_no_workstation_home_path():
+    for path in EVIDENCE.iterdir():
+        if path.is_file():
+            assert "/Users/" not in path.read_text(encoding="utf-8")
 
 
 def _assert_trace_complete(runtime):
@@ -151,87 +145,6 @@ def test_current_evidence_recomputes_configuration_input_trace_and_effect_contra
         assert values["error_count"] == 0
         assert values["task_success_rate"] == sum(r["task_succeeded"] is True for r in selected) / len(selected)
     assert (EVIDENCE / f"{prefix}-report.md").read_text(encoding="utf-8") == render_markdown(payload)
-
-
-def test_legacy_evidence_snapshot_retains_integrity_and_historical_results():
-    # This immutable snapshot predates honest ablation ids and orphan discovery;
-    # current behavior is exercised by tests/evals, not claimed from this archive.
-    manifest = json.loads((LEGACY_EVIDENCE / "manifest.json").read_text(encoding="utf-8"))
-
-    assert manifest["schema_version"] == "reliagent.evidence.v1"
-    assert manifest["evaluated_commit"] == LEGACY_EVALUATED_COMMIT
-    for filename, expected_sha256 in manifest["sha256"].items():
-        payload = (LEGACY_EVIDENCE / filename).read_bytes()
-        assert hashlib.sha256(payload).hexdigest() == expected_sha256
-
-    ml = json.loads((LEGACY_EVIDENCE / "ml-workflow-results.json").read_text(encoding="utf-8"))
-    phase3 = json.loads((LEGACY_EVIDENCE / "phase3-results.json").read_text(encoding="utf-8"))
-    ml_results = ml["results"]
-    phase3_results = phase3["results"]
-
-    assert ml["summary"]["contract_passed_repetitions"] == 24
-    assert ml["summary"]["total_repetitions"] == 24
-    assert phase3["summary"]["contract_passed_repetitions"] == 90
-    assert phase3["summary"]["total_repetitions"] == 90
-    for payload, results in ((ml, ml_results), (phase3, phase3_results)):
-        assert {result["config_id"] for result in results} == {
-            "baseline",
-            "full",
-            "no_recovery",
-        }
-        assert all(
-            len({result["input_id"] for result in results if result["case_id"] == case_id})
-            == 1
-            for case_id in {result["case_id"] for result in results}
-        )
-        assert all(
-            result["trace_integrity"]["sequence_contiguous"]
-            and not result["trace_integrity"]["missing"]
-            for result in results
-        )
-        assert sum(
-            result["effect_observations"]["duplicate_effects"] for result in results
-        ) == 0
-        assert payload["summary"]["by_configuration"]["full"][
-            "recovery_success_rate"
-        ] == 0.5
-    assert {
-        result["effect_observations"]["process_exit_code"]
-        for result in ml_results
-        if result["effect_observations"]["process_exit_code"] is not None
-    } == {86, 87}
-    assert all(
-        result["metrics_snapshot"]["final_status"] == "failed"
-        for result in ml_results
-        if result["config_id"] == "baseline"
-        and result["case_id"] in {"ML02", "ML03", "ML04", "ML05"}
-    )
-
-
-@pytest.mark.parametrize("evidence,evaluated_commit", SUPERSEDED_EVIDENCE)
-def test_superseded_evidence_snapshot_retains_integrity(evidence, evaluated_commit):
-    manifest = json.loads(
-        (evidence / "manifest.json").read_text(encoding="utf-8")
-    )
-    assert manifest["schema_version"] == "reliagent.evidence.v1"
-    assert manifest["evaluated_commit"] == evaluated_commit
-    for filename, expected_sha256 in manifest["sha256"].items():
-        assert hashlib.sha256(
-            (evidence / filename).read_bytes()
-        ).hexdigest() == expected_sha256
-    for prefix, total in (("ml-workflow", 24), ("phase3", 90)):
-        payload = json.loads(
-            (evidence / f"{prefix}-results.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        assert payload["summary"]["total_repetitions"] == total
-        assert payload["summary"]["contract_passed_repetitions"] == total
-        assert {result["config_id"] for result in payload["results"]} == {
-            "no_retry_no_recovery",
-            "full",
-            "no_recovery",
-        }
 
 
 def test_demo_runs_real_after_effect_recovery_without_duplicate_effect(tmp_path):
