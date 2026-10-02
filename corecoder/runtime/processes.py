@@ -169,11 +169,11 @@ class ManagedProcessRunner:
         return ProcessResult(
             exit_code=process.returncode if termination_confirmed else None,
             stdout=_bound_output(
-                stdout_bytes.decode("utf-8", errors="replace"),
+                _normalize_newlines(stdout_bytes.decode("utf-8", errors="replace")),
                 spec.output_limit,
             ),
             stderr=_bound_output(
-                stderr_bytes.decode("utf-8", errors="replace"),
+                _normalize_newlines(stderr_bytes.decode("utf-8", errors="replace")),
                 spec.output_limit,
             ),
             duration_seconds=monotonic() - started_at,
@@ -245,3 +245,7 @@ def _bound_output(text: str, limit: int) -> str:
     head_length = int(content_limit * 0.6)
     tail_length = content_limit - head_length
     return text[:head_length] + _TRUNCATION_MARKER + text[-tail_length:]
+
+
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")

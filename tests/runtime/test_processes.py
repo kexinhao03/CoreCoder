@@ -454,6 +454,25 @@ def test_polling_preserves_output_without_repeating_partial_bytes(tmp_path):
     assert result.stderr == "error"
 
 
+def test_subprocess_output_normalizes_platform_newlines(tmp_path):
+    result = ManagedProcessRunner().run(
+        make_spec(
+            tmp_path,
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.buffer.write(b'first\\r\\nsecond\\r'); "
+                "sys.stderr.buffer.write(b'error\\r\\n')"
+            ),
+        ),
+        threading.Event(),
+    )
+
+    assert result.stdout == "first\nsecond\n"
+    assert result.stderr == "error\n"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX signal failure injection")
 @pytest.mark.parametrize("error_type", [PermissionError, ProcessLookupError])
 def test_signal_failure_with_live_process_is_termination_unknown(tmp_path, monkeypatch, error_type):

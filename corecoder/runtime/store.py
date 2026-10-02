@@ -55,7 +55,7 @@ class SQLiteStore:
     """Persist runtime state and its audit trail in SQLite."""
 
     _terminal_tool_call_listeners: ClassVar[dict[Path, list[weakref.WeakMethod]]] = {}
-    _terminal_tool_call_listeners_lock: ClassVar[threading.Lock] = threading.Lock()
+    _terminal_tool_call_listeners_lock: ClassVar[threading.RLock] = threading.RLock()
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)

@@ -1,5 +1,7 @@
 """Tests for the offline scripted demo and ScriptedLLM."""
 
+import os
+
 import pytest
 
 from corecoder.demo import ScriptedLLM, _script, run_demo
@@ -38,6 +40,10 @@ def test_script_points_at_the_demo_workdir(tmp_path):
     assert all(path.startswith(str(tmp_path)) for path in paths if path)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="example constructs a POSIX-shell command with cd and &&",
+)
 def test_plan_hooks_example_guards_then_lets_through(tmp_path, monkeypatch):
     import importlib.util
     from pathlib import Path

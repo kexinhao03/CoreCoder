@@ -1,0 +1,2 @@
+*.sh text eol=lf
+evidence/reliagent/** text eol=lf
