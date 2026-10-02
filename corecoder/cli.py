@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.history import FileHistory
@@ -13,11 +14,13 @@ from rich.panel import Panel
 
 from . import __version__
 from .agent import Agent
+from .agent_runtime import AgentRuntimeSession
 from .config import Config
 from .hooks import load_hooks
 from .llm import LLM, LiteLLM
 from .mcp import load_mcp_tools
 from .permissions import Permission
+from .runtime import RunStatus
 from .session import list_sessions, load_session, save_session
 from .tools import ALL_TOOLS
 
@@ -34,10 +37,31 @@ def _parse_args():
     p.add_argument("--api-key", help="API key (default: $OPENAI_API_KEY)")
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
     p.add_argument("--yes", action="store_true", help="Auto-approve every tool call (for scripts and CI)")
+    p.add_argument("--runtime-workspace", type=Path, help="Runtime audit workspace (default: current directory)")
+    p.add_argument("--no-runtime", action="store_true", help="Disable durable Runtime recording of read/write tools")
     p.add_argument("--demo", action="store_true", help="Run the offline scripted demo (no API key needed)")
     p.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session")
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     return p.parse_args()
+
+
+def _build_agent(
+    llm, config: Config, permission: Permission, *, runtime_workspace: Path | None, runtime_enabled: bool,
+) -> tuple[Agent, AgentRuntimeSession | None]:
+    tools = [*ALL_TOOLS, *load_mcp_tools()]
+    hooks = load_hooks()
+    session = None
+    if runtime_enabled:
+        session = AgentRuntimeSession.open(runtime_workspace or Path.cwd(), config.model, permission)
+        tools = session.wrap_tools(tools)
+    agent = Agent(
+        llm=llm,
+        tools=tools,
+        max_context_tokens=config.max_context_tokens,
+        permission=permission,
+        hooks=hooks,
+    )
+    return agent, session
 
 
 def main():
@@ -88,35 +112,46 @@ def main():
         permission = Permission()
     else:
         permission = Permission(ask=_ask_permission)
-    agent = Agent(
-        llm=llm,
-        tools=[*ALL_TOOLS, *load_mcp_tools()],
-        max_context_tokens=config.max_context_tokens,
-        permission=permission,
-        hooks=load_hooks(),
-    )
 
-    # resume saved session
+    # Resolve the resumed model before recording the Runtime session.
+    loaded = None
     if args.resume:
         loaded = load_session(args.resume)
-        if loaded:
-            agent.messages, loaded_model = loaded
-            # restore the model from the saved session unless overridden by CLI
-            if not args.model:
-                agent.llm.model = loaded_model
-                config.model = loaded_model
-            console.print(f"[green]Resumed session: {args.resume} (model: {agent.llm.model})[/green]")
-        else:
+        if not loaded:
             console.print(f"[red]Session '{args.resume}' not found.[/red]")
             sys.exit(1)
+        if not args.model:
+            llm.model = config.model = loaded[1]
 
-    # one-shot mode
-    if args.prompt:
-        _run_once(agent, args.prompt)
-        return
+    agent, runtime_session = _build_agent(
+        llm, config, permission,
+        runtime_workspace=args.runtime_workspace,
+        runtime_enabled=not args.no_runtime,
+    )
 
-    # interactive REPL
-    _repl(agent, config)
+    status = RunStatus.SUCCEEDED
+    try:
+        if loaded:
+            agent.messages = loaded[0]
+            console.print(f"[green]Resumed session: {args.resume} (model: {agent.llm.model})[/green]")
+
+        if args.prompt:
+            _run_once(agent, args.prompt)
+        else:
+            _repl(agent, config)
+    except KeyboardInterrupt:
+        status = RunStatus.CANCELLED
+        raise
+    except SystemExit as exc:
+        if exc.code:
+            status = RunStatus.CANCELLED if exc.code == 130 else RunStatus.FAILED
+        raise
+    except Exception:
+        status = RunStatus.FAILED
+        raise
+    finally:
+        if runtime_session is not None:
+            runtime_session.finish(status)
 
 
 def _ask_permission(tool_name: str, arguments: dict) -> str:

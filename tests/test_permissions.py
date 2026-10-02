@@ -1,5 +1,9 @@
 """Consent gating for mutating tools: the Permission layer and its wiring."""
 
+from pathlib import Path
+
+import pytest
+
 from corecoder import Agent
 from corecoder.demo import ScriptedLLM
 from corecoder.llm import LLMResponse, ToolCall
@@ -159,6 +163,65 @@ def test_yes_flag_parses(monkeypatch):
     from corecoder.cli import _parse_args
     monkeypatch.setattr("sys.argv", ["corecoder", "--yes"])
     assert _parse_args().yes
+
+
+def test_runtime_flags_default_to_enabled(monkeypatch):
+    from corecoder.cli import _parse_args
+    monkeypatch.setattr("sys.argv", ["corecoder"])
+
+    args = _parse_args()
+
+    assert args.no_runtime is False
+    assert args.runtime_workspace is None
+
+
+def test_runtime_flags_parse_workspace_and_opt_out(monkeypatch, tmp_path):
+    from corecoder.cli import _parse_args
+    monkeypatch.setattr("sys.argv", ["corecoder", "--runtime-workspace", str(tmp_path), "--no-runtime"])
+
+    args = _parse_args()
+
+    assert args.no_runtime is True
+    assert args.runtime_workspace == Path(tmp_path)
+
+
+@pytest.mark.parametrize("answer,ask_count,status,decision,written", [
+    ("once", 2, "approved", "allow_once", True),
+    ("always", 1, "approved", "allow_once", True),
+    ("deny", 2, "denied", "deny", False),
+    (None, 0, "denied", "deny", False),
+])
+def test_runtime_builder_maps_permission_to_durable_approval(
+    tmp_path, monkeypatch, answer, ask_count, status, decision, written,
+):
+    from corecoder import cli
+    from corecoder.config import Config
+    from corecoder.runtime import RunStatus
+
+    monkeypatch.setattr(cli, "load_mcp_tools", list)
+    monkeypatch.setattr(cli, "load_hooks", lambda: None)
+    asked = []
+    permission = Permission(
+        ask=(lambda name, args: asked.append((name, args)) or answer) if answer is not None else None,
+    )
+    agent, session = cli._build_agent(
+        ScriptedLLM(_two_writes_then_text(tmp_path)), Config(), permission,
+        runtime_workspace=tmp_path, runtime_enabled=True,
+    )
+
+    assert agent.chat("go") == "done"
+    session.finish(RunStatus.SUCCEEDED)
+
+    assert len(asked) == ask_count
+    if asked:
+        assert asked[0] == ("write_file", {"file_path": str(tmp_path / "a.txt"), "content": "x\n"})
+    assert (tmp_path / "a.txt").exists() is written
+    assert (tmp_path / "b.txt").exists() is written
+    approvals = session.store.list_approvals(session.run_id)
+    assert [(a.status.value, a.decision.value) for a in approvals] == [(status, decision), (status, decision)]
+    results = [message["content"] for message in agent.messages if message["role"] == "tool"]
+    assert len(results) == 2
+    assert all(result.startswith("Wrote" if written else "Approval denied") for result in results)
 
 
 def test_ask_prompt_maps_answers(monkeypatch):

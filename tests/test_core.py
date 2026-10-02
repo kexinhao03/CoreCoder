@@ -66,10 +66,11 @@ def test_config_from_env(monkeypatch):
     assert c.model == "test-model"
 
 
-def test_config_defaults(monkeypatch):
+def test_config_defaults(monkeypatch, tmp_path):
     # clear relevant env vars without leaking the change into other tests
     monkeypatch.delenv("CORECODER_MODEL", raising=False)
     monkeypatch.delenv("CORECODER_MAX_TOKENS", raising=False)
+    monkeypatch.chdir(tmp_path)
 
     c = Config.from_env()
     assert c.model == "gpt-5.5"

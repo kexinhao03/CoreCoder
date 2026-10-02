@@ -1,21 +1,39 @@
 <div align="center">
 
-# CoreCoder
+# ReliAgent — CoreCoder 的可靠性运行时 Fork
 
-**编程 agent 里的 nanoGPT。1.2k 行引擎、整包 2398 行纯 Python 全部一口气可读，读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
+**在 CoreCoder 可读 coding-agent 基线之上，加入受边界约束、由 SQLite 支撑的可靠性 Runtime 的 Fork。**
 
-*learn from it · fork it · ship something better*
+*fork 基线 · 检查 Runtime · 只按证据扩展*
 
-中文 | [English](README.md) | [配套源码导读 · 八篇双语](article/)
+中文 | [English](README.md) | [上游源码导读 · 八篇双语](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 
-[![PyPI](https://img.shields.io/pypi/v/corecoder)](https://pypi.org/project/corecoder/)
+[![PyPI：上游 CoreCoder](https://img.shields.io/pypi/v/corecoder?label=PyPI%20上游%20CoreCoder)](https://pypi.org/project/corecoder/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://github.com/he-yufeng/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/CoreCoder/actions)
-[![engine](https://img.shields.io/badge/engine-1171_LoC-blue)](article/)
-[![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](article/)
+[![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml)
+[![engine](https://img.shields.io/badge/engine-1175_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
+[![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 
 </div>
+
+此维护 Fork 由 [kexinhao03](https://github.com/kexinhao03) 负责，仓库为
+[kexinhao03/CoreCoder](https://github.com/kexinhao03/CoreCoder)。它保留
+[he-yufeng/CoreCoder 固定提交 `069948d180cb0ceb1a6d7aafeb0e141c166a009d`](https://github.com/he-yufeng/CoreCoder/commit/069948d180cb0ceb1a6d7aafeb0e141c166a009d) 的上游基线，并明确归功于原作者
+[Yufeng He](https://github.com/he-yufeng)。原始源码导读和演示素材仍属于上游作品，链接有意继续指向该来源。
+
+## 上游与贡献边界
+
+| 范围 | 交付边界与事实来源 |
+| --- | --- |
+| 上游基线 | CoreCoder 原始 Agent、文章与素材固定于上游提交 [`069948d180cb0ceb1a6d7aafeb0e141c166a009d`](https://github.com/he-yufeng/CoreCoder/commit/069948d180cb0ceb1a6d7aafeb0e141c166a009d)。本地仅设置 `.gitignore` 的提交为 `c45968d527944386015750f98bcd76ef91277576`；其子提交 `da7ad0fdcca4e392b2bbc01419fe4cb510a8fec5` 是首个 ReliAgent 提交。 |
+| Runtime | 此 Fork 加入 Runtime；默认 Agent 路径只将 `read_file` 和 `write_file` 包装进 Runtime，其他 Agent 工具尚未 Runtime 化。 |
+| Recovery CLI | `reliagent` CLI 暴露固定 workflow 的恢复与对账，并非交互式 Agent 的恢复入口。 |
+| 评测 | 结果比较三个 **Runtime 配置**：`no_retry_no_recovery`、`full`、`no_recovery`，并非外部 baseline。 |
+| ML workflow | 当前只有一个确定性本地 workflow；第二个 workflow 尚未实现。 |
+| 证据 | [`a7579ac`](evidence/reliagent/a7579ac/) 是当前快照，评测冻结的 Runtime Commit `a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd`：ML 24/24、phase3 90/90 场景契约通过。本地打包验收覆盖隔离构建、`twine check`、全新环境 wheel 安装、两个 CLI help 与安装后 ML 评测 24/24；P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
+
+请在此 Fork 提交问题与变更：[kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues)。
 
 - **读得完。** 一个下午读完整个引擎，没有一处藏着你看不懂的魔法。
 - **改得动。** 每一行都能在你自己机器上下断点、改了再跑。它真能干活，所以这份参考是活的，不是示意图。
@@ -25,7 +43,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1171 行 / 整包 2398 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 1175 行 / 整包 9100 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -36,14 +54,14 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1171 行。连最外层的 CLI、配置、打包一起算，整个包 24 个文件、物理 2398 行、净 1941 行，每个文件都短到能一口气读完。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，下文各有交代。
+引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1175 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 64 个文件、物理 10181 行、净 9100 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
 
-它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头，157 个测试是绿的。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；当前全量测试结果随已检入的 Runtime 证据记录，不在概览里冻结一个会过期的数字，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
 <p align="center">
-  <img src="assets/demo-plan-hooks.gif" width="760"
+  <img src="https://raw.githubusercontent.com/he-yufeng/CoreCoder/069948d180cb0ceb1a6d7aafeb0e141c166a009d/assets/demo-plan-hooks.gif" width="760"
        alt="plan mode 实战：agent 先读 fib.py，写入被 plan mode 拦下，先给计划；批准之后才动手改文件、跑测试，Pre/PostToolUse hooks 在每次调用前后触发">
 </p>
 
@@ -56,12 +74,10 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 读源码之前，先让它在你机器上活一次，建立点体感。它是个拿来 fork 的地基，所以推荐直接 clone 下来、可编辑安装，边读边改：
 
 ```bash
-git clone https://github.com/he-yufeng/CoreCoder
+git clone https://github.com/kexinhao03/CoreCoder
 cd CoreCoder
 pip install -e .
 ```
-
-只想先跑起来找找感觉，直接 `pip install corecoder` 也行。
 
 给它一个模型加一把 key 就能动。默认走 OpenAI 兼容接口，换 provider 通常只是改两个环境变量：
 
@@ -72,7 +88,7 @@ pip install -e .
 | OmniRoute | `OPENAI_API_KEY=your-key OPENAI_BASE_URL=http://localhost:20128/v1 CORECODER_MODEL=auto` |
 | 本地 Ollama | `OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1 CORECODER_MODEL=qwen2.5-coder` |
 
-Kimi、Qwen 这些同样是改这两个变量；连 OpenAI 兼容接口都不给的 provider，装上可选的 LiteLLM 后端（`pip install "corecoder[litellm]"`）能路由一百多家。第三篇文章把这块讲得更细。key 可以直接 `export`，也可以在项目根目录扔个 `.env`，启动时自动加载。然后：
+Kimi、Qwen 这些同样是改这两个变量；连 OpenAI 兼容接口都不给的 provider，也应从当前检出的源码安装可选 LiteLLM 后端（`pip install -e ".[litellm]"`），可路由一百多家。第三篇文章把这块讲得更细。key 可以直接 `export`，也可以在项目根目录扔个 `.env`，启动时自动加载。然后：
 
 端到端真机冒烟过三家（读文件、改代码、跑一次确认、自己报告）：DeepSeek、Qwen3、Kimi K2，走同一个 OpenRouter 兼容端点，各自完整跑完全循环。写脚本用 one-shot 的留意：`-p` 默认拒绝一切改动类工具，要加 `--yes`，这是设计如此。
 
@@ -87,15 +103,15 @@ corecoder -p "给 parse_config() 加错误处理"   # 一次性模式，干完�
 
 ```
 corecoder/
-├── agent.py        agent 主循环 + 并行工具执行       213 行   ← 从这里开始读
+├── agent.py        agent 主循环 + 并行工具执行       216 行   ← 从这里开始读
 ├── llm.py          流式客户端 + 重试 + 成本统计       267 行
-├── context.py      三层上下文压缩                     221 行
+├── context.py      三层上下文压缩                     220 行
 ├── session.py      会话存盘 / 续聊 + 路径穿越防护      97 行
 ├── permissions.py  改动类工具的用户授权                48 行
 ├── hooks.py        工具调用前后的用户 shell 钩子        85 行
 ├── mcp.py          MCP stdio 客户端，接外部工具       208 行
 ├── prompt.py       系统提示词                          41 行
-├── cli.py          REPL + 斜杠命令 + 一次性模式        346 行
+├── cli.py          REPL + 斜杠命令 + 一次性模式        381 行
 ├── config.py       环境变量配置                        55 行
 └── tools/
     ├── bash.py       shell + 危险命令闸 + cd 追踪      134 行
@@ -106,7 +122,7 @@ corecoder/
     ├── write.py      文件写入                           43 行
     ├── todo.py       agent 自维护的任务清单             79 行
     ├── agent.py      子 agent 派生                      64 行
-    └── base.py       工具基类                           27 行
+    └── base.py       工具基类                           28 行
 examples/
 └── plan_hooks_demo.py  离线 plan mode + hooks 演示（免 API key）
 ```
@@ -148,21 +164,21 @@ def chat(self, user_input):
 
 我还写了一套双语源码导读，一篇导言加七篇正文，每篇都配英文镜像（`_EN.md`）。它对着 CoreCoder 的真实代码，讲 Claude Code 这类 agent 的内部构造。有一条给自己立的硬规矩：每一处行数、每一段代码都从仓库里现读现核，绝不凭印象编。前六篇带你读懂，第七篇带你 fork，哪篇先读都行。
 
-- **[导言 · 用 CoreCoder 读懂 Claude Code，再造一个你自己的](article/00-index.md)**
-- **[01 一个 agent 的本体，是一个 while 循环](article/01-the-loop.md)** — `agent.py` 的主循环、打断与轮次上限
-- **[02 工具系统：让模型安全地动手](article/02-tools.md)** — `tools/` 七个工具与 bash 安全闸
-- **[03 接入任意大模型，顺便把账算清楚](article/03-llm-and-cost.md)** — `llm.py` 的 provider 包装、重试与成本统计
-- **[04 用有限的窗口扛住一个长任务](article/04-context.md)** — `context.py` 的三层压缩与孤儿 tool 消息
-- **[05 并行执行与子 agent](article/05-parallel-and-subagents.md)** — 线程池并发与子 agent 隔离
-- **[06 把它跑成一个真正的命令行工具](article/06-session-and-cli.md)** — `session.py` 与路径穿越防护
-- **[07 Fork CoreCoder，搭一个你自己的 coding agent](article/07-build-your-own.md)** — 从 fork 到加自定义工具到换模型
+- **[导言 · 用 CoreCoder 读懂 Claude Code，再造一个你自己的](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)**
+- **[01 一个 agent 的本体，是一个 while 循环](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/01-the-loop.md)** — `agent.py` 的主循环、打断与轮次上限
+- **[02 工具系统：让模型安全地动手](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/02-tools.md)** — `tools/` 七个工具与 bash 安全闸
+- **[03 接入任意大模型，顺便把账算清楚](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/03-llm-and-cost.md)** — `llm.py` 的 provider 包装、重试与成本统计
+- **[04 用有限的窗口扛住一个长任务](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/04-context.md)** — `context.py` 的三层压缩与孤儿 tool 消息
+- **[05 并行执行与子 agent](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/05-parallel-and-subagents.md)** — 线程池并发与子 agent 隔离
+- **[06 把它跑成一个真正的命令行工具](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/06-session-and-cli.md)** — `session.py` 与路径穿越防护
+- **[07 Fork CoreCoder，搭一个你自己的 coding agent](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/07-build-your-own.md)** — 从 fork 到加自定义工具到换模型
 
 ## Fork 它，造个更好的
 
 读懂之后，最自然的下一步就是 fork。起手不用伤筋动骨：
 
 - **换个你常用的模型。** 就是上面那两个环境变量，`llm.py`（267 行）是所有 provider 适配的入口。
-- **加一件你自己的工具。** 照 `tools/base.py`（27 行）的工具基类写个新文件，跑测试、抓网页、调 LSP 都行，第二篇文章末尾手把手带你写第一个。
+- **加一件你自己的工具。** 照 `tools/base.py`（28 行）的工具基类写个新文件，跑测试、抓网页、调 LSP 都行，第二篇文章末尾手把手带你写第一个。
 - **改系统提示词。** `prompt.py` 才 41 行，改一句就能看到 agent 的脾气变了，是门槛最低的「改一处就有反馈」。
 - **直接当库 import。** 顶层导出了 `Agent`、`LLM`、`Config`，能嵌进你自己的程序：
 
@@ -262,6 +278,90 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 每个配好的服务器在启动时拉起一个子进程，握手、列出工具；每件工具都注册成 `mcp__<服务器>__<工具>`，钩子匹配和授权闸对它和内建工具一视同仁。MCP 工具不在只读名单里，模型要调，得先问过你。握手给十五秒，一次调用给六十秒；服务器挂了或者迟迟不应，那一次调用就以普通工具结果的形式报错，循环照常往下走。客户端只实现协议里工具那一小片（initialize、tools/list、tools/call），别的一概不碰，所以整块实现收在 `mcp.py` 一个文件里，两百行出头。没有 `mcp.json` 就没有 MCP，一切照旧。
 
+## ReliAgent Runtime 与确定性机器学习 Workflow
+
+`corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。默认 Agent 循环只通过 `RuntimeToolAdapter` 接入内建 `read_file` 和需要审批的 `write_file`；独立的 `reliagent` CLI 负责固定 workflow 的恢复与对账。其他 Agent 工具尚未 Runtime 化。
+
+一个 Runtime Run 同时只允许一个活动 ToolCall。同一会话中的 `write_file` 会在提交、审批和执行的完整生命周期上串行化；`read_file` 有意不占用写入闸。因此同一个 Run 内并行的 `read_file`/`read_file` 与 `read_file`/`write_file` 批次**不受支持**：竞争者可能收到 `run already has an active tool call`。需要并发时应拆成独立 Run；本版本不声称支持 Runtime 管理的并行读。
+
+机器学习实验是建立在同一个 RuntimeExecutor 上的唯一确定性本地 workflow：检查固定本地数据集，在外部效果实验前等待审批，执行确定性普通最小二乘，验证唯一 Effect Marker，再生成报告。全过程不使用网络服务，也不增加依赖；第二个 workflow 仍 deferred。
+
+求职展示可以直接运行这份 [3—5 分钟 Demo](docs/reliagent/demo.md)：
+
+```bash
+sh scripts/reliagent_ml_demo.sh
+```
+
+[架构图与状态机](docs/reliagent/architecture.md)、[简历表述边界](docs/reliagent/resume-evidence.md)与当前 [`a7579ac` 证据](evidence/reliagent/a7579ac/)说明当前范围。该证据评测冻结的 Runtime Commit `a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd`，并记录精确命令、ML 24/24 与 phase3 90/90 场景契约通过数、文件哈希和测试结果。本地打包验收覆盖隔离构建、`twine check`、全新环境 wheel 安装、两个 CLI help 与安装后 ML 评测 24/24；P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred，不声称 strict-v2 完成。
+
+```mermaid
+flowchart LR
+    A[CoreCoder Agent] --> TA[RuntimeToolAdapter]
+    C[reliagent CLI] --> W[MLExperimentWorkflow]
+    E[Evaluation Adapter] --> W
+    TA --> X[RuntimeExecutor]
+    W --> X
+    X --> P[Policy 与 Approval]
+    X --> R[Managed Process Runner]
+    X --> S[(SQLite: Run, Step, ToolCall, Approval, Event)]
+    RM[RecoveryManager / Reconciliation] --> S
+    S --> T[Trace, Metrics, Raw JSON, Markdown]
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> created
+    created --> running
+    running --> waiting_approval
+    waiting_approval --> running: allow_once
+    waiting_approval --> failed: deny / APPROVAL_DENIED
+    running --> recoverable: 进程丢失 / 结果不确定
+    recoverable --> running: 安全只读重试
+    recoverable --> running: 基于证据对账
+    running --> succeeded
+    running --> failed
+    running --> cancelled
+```
+
+源码检出后的最小正常路径（把 `start` 输出的 ID 复制到后续命令）：
+
+```bash
+WORKSPACE=$(mktemp -d /tmp/reliagent-ml.XXXXXX)
+reliagent workflow ml start --workspace "$WORKSPACE"
+reliagent approve <pending_approval_id> --workspace "$WORKSPACE"
+reliagent workflow ml resume <run_id> --workspace "$WORKSPACE"
+reliagent workflow ml report <run_id> --workspace "$WORKSPACE"
+```
+
+最后一条命令生成 `reports/<run_id>/ml-experiment-result.json` 与 `ml-experiment-report.md`。要触发两个真实进程退出边界，可在 `start` 后增加 `--inject-process-loss environment_after_start`（退出码 86），或 `--inject-process-loss experiment_after_effect`（退出码 87）。环境检查丢失允许创建新的只读 Attempt；实验结果未知时绝不自动重放，必须运行 `reliagent reconcile <tool_call_id> --decision completed|retry|unresolved --workspace "$WORKSPACE"`。
+
+- 审批请求在一个事务里保存 Approval、等待中的 Run/ToolCall 状态和 Event。`allow_once` 绑定一个 ToolCall attempt 及其已存参数，不能授权另一个 attempt。拒绝会取消该调用，不启动进程。
+- 策略声明风险、执行类型、时限与重试资格，不是安全沙箱：被归类为只读的工具仍拥有其进程的操作系统权限。
+- 子进程启动前先提交 `tool.started`，限制返回输出，再记录观测结果。POSIX 下新建 session，可以对原进程组发 TERM/KILL，并确认父进程和进程组都已消失，比仅杀直接子进程的超时处理更强；主动逃离进程组的后代不在保证范围内。Windows 标准库创建进程组与终止父进程只能 best-effort，不能保证停掉整棵进程树；无法确认终止时记为 `interrupted`，不能声称已确认超时。
+- SQLite 无法和外部副作用原子提交：进程可能已经完成作用，完成事务却失败。只在启动恢复、旧 executor 已失去所有权后调用 `RecoveryManager.scan()`，不能扫描仍有意运行的 executor 工作。扫描把运行中孤儿标为 `interrupted`，只分类，不执行，不接收 runner/callback。高风险或未知结果需人工核对；这是避免不安全重放，不是 exactly-once 副作用保证。
+- 自动重试同时要求已存只读风险与幂等性、当前策略许可、剩余 attempt 预算，以及显式列出的可重试失败类别。重试创建新 ToolCall，用 `attempt` 和 `retry_of` 保留血缘。安全启动恢复重试还要求 `process_lost` 来源并显式调用 `resume_retry`；它只创建新 attempt，不执行。
+- Run 取消先提交 cancelled 状态，关闭新调用和重试准入，再通知活动工作。进程内操作收到协作式 `threading.Event`；不能强制停止 callable、强制实施其时限，也不能回滚已发生的副作用。返回 cancelled 状态不等于副作用被回滚。
+
+- 进程终止未知时，同一事务把调用标为 interrupted，把 running/waiting Run 标为 recoverable，核对前阻止新的执行。普通重试的预留、调度和创建事件也一起提交。启动扫描还会把未启动的 CREATED 预留报告为 `human_required` / `created_not_started`，只有显式 `ABANDON` 才释放预留，随后可提交新请求。扫描不会执行或自动重新排队，放弃也不声称成功或失败。
+
+Event 保留每个 Run 内的序号和 ToolCall 标识。Agent 循环仍只接入两个工具，恢复入口位于固定 workflow CLI，而不是交互式 CoreCoder CLI。P1 Metrics/Trace provenance 仍 deferred；由于尚未持久化 Run 级 LLM telemetry，Runtime token/cost 仍明确标为不可用。
+
+当前固定矩阵以相同输入和故障计划比较 `no_retry_no_recovery`、`full`、`no_recovery` 三种配置，属于 Runtime 内部对比：
+
+```bash
+reliagent eval phase3 --output /tmp/reliagent-eval
+```
+
+当前 Raw JSON 记录 90/90 场景契约通过，不等同于通用任务成功。这不是生产环境可靠性基准、通用 exactly-once 保证或 P1 Metrics/Trace provenance 的声明。
+
+Workflow 专用矩阵用同一输入在三种配置下各运行八个场景，共 24/24 场景契约通过：
+
+```bash
+reliagent eval ml_workflow --output /tmp/reliagent-ml-eval
+```
+
+其中的数字只描述固定本地场景，不证明第二个 workflow、external baseline、strict-v2 完成或 P1 Trace/Metric provenance。Demo 使用真实 exit-87 恢复，观测到一个 effect marker；这不是任意外部副作用的保证。
+
 ## 相关项目
 
 如果你读 CoreCoder 读得还顺，下面几个我做的 agent / LLM 系统方向的工具也许用得上：
@@ -274,7 +374,7 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（157 个测试）、`ruff check` 和 `compileall`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`、`ruff check .` 和 `python -m compileall -q corecoder tests`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 
