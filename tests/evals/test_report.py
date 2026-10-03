@@ -68,8 +68,7 @@ def test_raw_report_rewrites_repository_paths_as_relative(tmp_path):
     raw_text = raw_path.read_text(encoding="utf-8")
 
     assert str(ROOT) not in raw_text
-    relative_fixture = Path("corecoder") / "workflows" / "fixture.py"
-    assert f"python {relative_fixture}" in raw_text
+    assert "python corecoder/workflows/fixture.py" in raw_text
 
 
 def test_raw_report_normalizes_windows_repository_paths(tmp_path):

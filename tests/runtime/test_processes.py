@@ -150,7 +150,7 @@ def test_process_runner_passes_explicit_environment(tmp_path):
         timeout_seconds=spec.timeout_seconds,
         output_limit=spec.output_limit,
         termination_grace_seconds=spec.termination_grace_seconds,
-        environment={"RELIAGENT_PROCESS_TEST": "explicit"},
+        environment={**os.environ, "RELIAGENT_PROCESS_TEST": "explicit"},
     )
 
     result = ManagedProcessRunner().run(spec, threading.Event())
