@@ -645,17 +645,34 @@ def _cancel_run(
     step = store.create_step(run.id, sequence=1, title="probe")
     store.transition_step(step.id, StepStatus.RUNNING, "step.started")
     results = []
-    worker = threading.Thread(target=lambda: results.append(executor.submit_subprocess(
-        run.id, "probe", (sys.executable, "-c", "print('unused')"), step_id=step.id
-    )))
+    worker_errors = []
+
+    def submit() -> None:
+        try:
+            results.append(executor.submit_subprocess(
+                run.id,
+                "probe",
+                (sys.executable, "-c", "print('unused')"),
+                step_id=step.id,
+            ))
+        except Exception as error:  # noqa: BLE001 - surface worker failure after join
+            worker_errors.append(error)
+
+    worker = threading.Thread(target=submit)
     worker.start()
-    if not runner.started.wait(timeout=1):
+    if not runner.started.wait(timeout=10):
+        executor.cancel_run(run.id)
+        worker.join(timeout=10)
+        if worker.is_alive():
+            raise RuntimeError("cancellation scenario worker did not stop")
         raise RuntimeError("cancellation scenario did not start")
     _trigger(fault, case.fault_schedule.point)
     executor.cancel_run(run.id)
-    worker.join(timeout=2)
+    worker.join(timeout=10)
     if worker.is_alive():
         raise RuntimeError("cancellation scenario did not stop")
+    if worker_errors:
+        raise RuntimeError("cancellation scenario worker failed") from worker_errors[0]
     store.transition_step(step.id, StepStatus.CANCELLED, "step.cancelled")
     call = store.list_tool_calls(run.id)[0]
     return RuntimeExecution(
