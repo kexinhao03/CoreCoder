@@ -150,7 +150,7 @@ def test_process_runner_passes_explicit_environment(tmp_path):
         timeout_seconds=spec.timeout_seconds,
         output_limit=spec.output_limit,
         termination_grace_seconds=spec.termination_grace_seconds,
-        environment={"RELIAGENT_PROCESS_TEST": "explicit"},
+        environment={**os.environ, "RELIAGENT_PROCESS_TEST": "explicit"},
     )
 
     result = ManagedProcessRunner().run(spec, threading.Event())
@@ -452,6 +452,25 @@ def test_polling_preserves_output_without_repeating_partial_bytes(tmp_path):
     assert result.failure_kind is None
     assert result.stdout == "first\nlast\ufffd"
     assert result.stderr == "error"
+
+
+def test_subprocess_output_normalizes_platform_newlines(tmp_path):
+    result = ManagedProcessRunner().run(
+        make_spec(
+            tmp_path,
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.buffer.write(b'first\\r\\nsecond\\r'); "
+                "sys.stderr.buffer.write(b'error\\r\\n')"
+            ),
+        ),
+        threading.Event(),
+    )
+
+    assert result.stdout == "first\nsecond\n"
+    assert result.stderr == "error\n"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX signal failure injection")

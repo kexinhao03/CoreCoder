@@ -1,6 +1,7 @@
 import gc
 import json
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -55,6 +56,65 @@ def wait_until(predicate, timeout):
         if time.monotonic() >= deadline:
             raise AssertionError("condition not reached")
         time.sleep(0.01)
+
+
+def test_listener_cleanup_does_not_deadlock_when_gc_reenters_listener_lock():
+    script = """
+import gc
+import tempfile
+from pathlib import Path
+
+from corecoder.runtime.executor import RuntimeExecutor
+from corecoder.runtime.policies import ToolPolicyRegistry
+from corecoder.runtime.store import SQLiteStore
+
+store = SQLiteStore(Path(tempfile.mkdtemp()) / "runtime.sqlite")
+executor = RuntimeExecutor(store, ToolPolicyRegistry({}))
+with store._terminal_tool_call_listeners_lock:
+    del executor
+    gc.collect()
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_submission_waits_for_cancellation_monitor_to_finish(running_store):
+    monitor_started = threading.Event()
+    monitor_finished = threading.Event()
+
+    class ObservableExecutor(RuntimeExecutor):
+        def _monitor_persisted_cancellation(
+            self, run_id, cancellation, monitor_stop
+        ):
+            monitor_started.set()
+            assert monitor_stop.wait(2)
+            time.sleep(0.1)
+            monitor_finished.set()
+
+    class WaitForMonitorRunner(SpyRunner):
+        def run(self, spec, cancel_event):
+            assert monitor_started.wait(1)
+            return super().run(spec, cancel_event)
+
+    executor = ObservableExecutor(
+        running_store,
+        ToolPolicyRegistry({"probe": probe_policy()}),
+        WaitForMonitorRunner(success_result("done")),
+    )
+
+    result = executor.submit_subprocess("run-1", "probe", ("command",))
+
+    assert result.call.status is ToolCallStatus.SUCCEEDED
+    assert monitor_finished.is_set()
 
 
 @pytest.mark.parametrize("approved", [False, True])
