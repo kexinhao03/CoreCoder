@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
 from corecoder.reliagent import ReliAgentRuntime, TaskStep
@@ -573,7 +574,7 @@ def _effect_persist_failure(
     try:
         fault.checkpoint(case.fault_schedule.point)
     except FaultInjected:
-        with sqlite3.connect(store.path) as connection:
+        with closing(sqlite3.connect(store.path)) as connection, connection:
             connection.executescript("""
                 CREATE TRIGGER fail_eval_completion
                 BEFORE INSERT ON events

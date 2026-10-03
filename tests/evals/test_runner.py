@@ -1,5 +1,10 @@
+import sqlite3
+from dataclasses import replace
+from types import SimpleNamespace
+
 from corecoder.evals.models import EvaluationCase, FaultSchedule
 from corecoder.evals.runner import EvaluationRunner
+from corecoder.evals.scenarios import phase3 as phase3_scenarios
 from corecoder.evals.suites.phase3 import phase3_configurations, phase3_suite
 
 
@@ -112,3 +117,48 @@ def test_complete_suite_executes_ninety_real_runtime_repetitions(tmp_path):
         for result in results
         if result.scenario != "normal_success"
     )
+
+
+def test_persistence_fault_scenario_closes_injection_connection(tmp_path, monkeypatch):
+    connections = []
+    connect = sqlite3.connect
+
+    class TrackedConnection:
+        def __init__(self, path):
+            self.connection = connect(path)
+            self.closed = False
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def close(self):
+            self.closed = True
+            self.connection.close()
+
+    def tracked_connect(path):
+        connection = TrackedConnection(path)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(
+        phase3_scenarios,
+        "sqlite3",
+        SimpleNamespace(connect=tracked_connect, IntegrityError=sqlite3.IntegrityError),
+    )
+    case = replace(phase3_suite()[8], repeat_count=1)
+
+    try:
+        results = EvaluationRunner(tmp_path, phase3_configurations()[:1]).run((case,))
+        assert results[0].passed is True
+        assert len(connections) == 1
+        assert connections[0].closed is True
+    finally:
+        for connection in connections:
+            connection.close()
