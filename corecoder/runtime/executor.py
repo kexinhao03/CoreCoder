@@ -69,6 +69,7 @@ class RuntimeExecutor:
         self._execution_arguments: dict[str, dict] = {}
         self._active_cancellations: dict[str, tuple[str, threading.Event]] = {}
         self._cancellation_monitor_stops: dict[str, threading.Event] = {}
+        self._cancellation_monitor_threads: dict[str, threading.Thread] = {}
         self._cancellation_lock = threading.Lock()
         self._store.register_terminal_tool_call_listener(
             self._discard_execution_arguments
@@ -103,18 +104,20 @@ class RuntimeExecutor:
     def _register_cancellation(self, call: ToolCallRecord) -> threading.Event:
         cancellation = threading.Event()
         monitor_stop = threading.Event()
+        monitor = threading.Thread(
+            target=self._monitor_persisted_cancellation,
+            args=(call.run_id, cancellation, monitor_stop),
+            daemon=True,
+        )
         with self._cancellation_lock:
             self._active_cancellations[call.id] = (call.run_id, cancellation)
             self._cancellation_monitor_stops[call.id] = monitor_stop
+            self._cancellation_monitor_threads[call.id] = monitor
             # Cancellation may commit after tool.started but before registration.
             # Register first so a later cancellation either finds us or is seen here.
             if self._store.get_run(call.run_id).status is RunStatus.CANCELLED:
                 cancellation.set()
-        threading.Thread(
-            target=self._monitor_persisted_cancellation,
-            args=(call.run_id, cancellation, monitor_stop),
-            daemon=True,
-        ).start()
+        monitor.start()
         return cancellation
 
     def _monitor_persisted_cancellation(
@@ -132,8 +135,11 @@ class RuntimeExecutor:
         with self._cancellation_lock:
             self._active_cancellations.pop(call_id, None)
             monitor_stop = self._cancellation_monitor_stops.pop(call_id, None)
+            monitor = self._cancellation_monitor_threads.pop(call_id, None)
         if monitor_stop is not None:
             monitor_stop.set()
+        if monitor is not None and monitor is not threading.current_thread():
+            monitor.join()
 
     def submit_subprocess(
         self,

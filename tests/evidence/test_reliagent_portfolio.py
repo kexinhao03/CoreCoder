@@ -147,6 +147,10 @@ def test_current_evidence_recomputes_configuration_input_trace_and_effect_contra
     assert (EVIDENCE / f"{prefix}-report.md").read_text(encoding="utf-8") == render_markdown(payload)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="demo requires sh and validates POSIX process-loss recovery",
+)
 def test_demo_runs_real_after_effect_recovery_without_duplicate_effect(tmp_path):
     result = subprocess.run(
         ["sh", str(ROOT / "scripts" / "reliagent_ml_demo.sh"), str(tmp_path)],
