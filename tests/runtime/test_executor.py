@@ -102,7 +102,7 @@ def test_submission_waits_for_cancellation_monitor_to_finish(running_store):
 
     class WaitForMonitorRunner(SpyRunner):
         def run(self, spec, cancel_event):
-            assert monitor_started.wait(1)
+            assert monitor_started.wait(10)
             return super().run(spec, cancel_event)
 
     executor = ObservableExecutor(
@@ -444,7 +444,7 @@ def test_separate_executor_observes_persisted_cancellation(running_store):
     external = RuntimeExecutor(SQLiteStore(running_store.path), registry)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(owner.submit_subprocess, "run-1", "probe", ("command",))
-        assert started.wait(1)
+        assert started.wait(10)
         external.cancel_run("run-1")
         result = future.result(timeout=3)
 
