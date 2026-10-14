@@ -38,7 +38,7 @@ def _parse_args():
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
     p.add_argument("--yes", action="store_true", help="Auto-approve every tool call (for scripts and CI)")
     p.add_argument("--runtime-workspace", type=Path, help="Runtime audit workspace (default: current directory)")
-    p.add_argument("--no-runtime", action="store_true", help="Disable durable Runtime recording of read/write tools")
+    p.add_argument("--no-runtime", action="store_true", help="Disable Runtime management of read/write/edit/bash tools")
     p.add_argument("--demo", action="store_true", help="Run the offline scripted demo (no API key needed)")
     p.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session")
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")

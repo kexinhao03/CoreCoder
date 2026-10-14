@@ -183,6 +183,14 @@ class Agent:
         # hooks and consent are settled up front on this thread: prompting
         # from pool workers would interleave several prompts on one terminal
         results = [self._pre_hooks(tc) or self._permit(tc) for tc in tool_calls]
+        if any(getattr(self._tool_by_name.get(tc.name), "manages_approval", False) for tc in tool_calls):
+            # Runtime admits one active call per Run. Stay on the caller thread
+            # so Ctrl+C reaches its process cleanup before another call starts.
+            for i, tc in enumerate(tool_calls):
+                if results[i] is None:
+                    results[i] = self._exec_tool(tc)
+                    self._post_hooks(tc, results[i])
+            return results
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             futures = {
                 i: pool.submit(self._exec_tool, tc)

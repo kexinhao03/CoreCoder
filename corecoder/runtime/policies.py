@@ -92,7 +92,7 @@ class ToolPolicyRegistry:
         bash = ToolPolicy(
             risk_level=RiskLevel.MUTATING,
             execution_kind=ExecutionKind.SUBPROCESS,
-            timeout_seconds=30,
+            timeout_seconds=120,
             max_attempts=1,
             idempotent=False,
             auto_retry=False,

@@ -12,7 +12,7 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml)
-[![engine](https://img.shields.io/badge/engine-1175_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
+[![engine](https://img.shields.io/badge/engine-1182_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 [![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 
 </div>
@@ -27,7 +27,7 @@
 | 范围 | 交付边界与事实来源 |
 | --- | --- |
 | 上游基线 | CoreCoder 原始 Agent、文章与素材固定于上游提交 [`069948d180cb0ceb1a6d7aafeb0e141c166a009d`](https://github.com/he-yufeng/CoreCoder/commit/069948d180cb0ceb1a6d7aafeb0e141c166a009d)。本地仅设置 `.gitignore` 的提交为 `c45968d527944386015750f98bcd76ef91277576`；其子提交 `da7ad0fdcca4e392b2bbc01419fe4cb510a8fec5` 是首个 ReliAgent 提交。 |
-| Runtime | 此 Fork 加入 Runtime；默认 Agent 路径只将 `read_file` 和 `write_file` 包装进 Runtime，其他 Agent 工具尚未 Runtime 化。 |
+| Runtime | 此 Fork 加入 Runtime；默认 Agent 路径将 `read_file`、`write_file`、`edit_file` 和 `bash` 包装进 Runtime，其他 Agent 工具尚未 Runtime 化。 |
 | Recovery CLI | `reliagent` CLI 暴露固定 workflow 的恢复与对账，并非交互式 Agent 的恢复入口。 |
 | 评测 | 结果比较三个 **Runtime 配置**：`no_retry_no_recovery`、`full`、`no_recovery`，并非外部 baseline。 |
 | ML workflow | 当前只有一个确定性本地 workflow；第二个 workflow 尚未实现。 |
@@ -43,7 +43,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1175 行 / 整包 9100 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 1182 行 / 整包 9163 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -54,7 +54,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1175 行。连最外层的 CLI、配置、打包和持久化运行时一起算，已提交的整个包 64 个文件、物理 10181 行、净 9100 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
+引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1182 行。连最外层的 CLI、配置、打包和持久化运行时一起算，当前源码整包 64 个文件、物理 10252 行、净 9163 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
 
 它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；当前全量测试结果随已检入的 Runtime 证据记录，不在概览里冻结一个会过期的数字，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
@@ -280,9 +280,13 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 
 ## ReliAgent Runtime 与确定性机器学习 Workflow
 
-`corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。默认 Agent 循环只通过 `RuntimeToolAdapter` 接入内建 `read_file` 和需要审批的 `write_file`；独立的 `reliagent` CLI 负责固定 workflow 的恢复与对账。其他 Agent 工具尚未 Runtime 化。
+`corecoder.runtime` 提供持久化的 Run、ToolCall、Event、SQLiteStore，以及审批记录、策略、`ManagedProcessRunner`、`RuntimeExecutor` 和 `RecoveryManager`。默认 Agent 循环通过 `RuntimeToolAdapter` 接入内建 `read_file`、`write_file`、`edit_file` 和 `bash`；独立的 `reliagent` CLI 负责固定 workflow 的恢复与对账。其他 Agent 工具尚未 Runtime 化。
 
-一个 Runtime Run 同时只允许一个活动 ToolCall。同一会话中的 `write_file` 会在提交、审批和执行的完整生命周期上串行化；`read_file` 有意不占用写入闸。因此同一个 Run 内并行的 `read_file`/`read_file` 与 `read_file`/`write_file` 批次**不受支持**：竞争者可能收到 `run already has an active tool call`。需要并发时应拆成独立 Run；本版本不声称支持 Runtime 管理的并行读。
+一个 Runtime Run 同时只允许一个活动 ToolCall。包含 Runtime 工具的批次在调用线程按模型给出的顺序执行，让 Ctrl+C 能触发进程清理并阻止后续调用开始。同一会话的共享执行闸也会串行化其他线程发起的提交、审批和执行。完全不含 Runtime 工具的批次保留原有并行方式；当前不支持 Runtime 管理的并行读。
+
+`bash` 通过受管理子进程执行，不再调用旧的 `BashTool.execute` 路径。它保留危险命令检查，执行前需要审批，记录执行目录和时限（默认及上限均为 120 秒），不自动重试。目录跟踪沿用原有简单 `cd` 解析规则。编辑失败会被记为失败调用。编辑正文与 Shell 命令正文只保存哈希摘要；原始参数仅在当前 executor 内用于审批和执行，重启后不可重放。
+
+[编程链路验证说明](docs/reliagent/coding-chain.md)通过正式 Agent builder 执行真实文件读取、编辑和测试子进程，覆盖修改前失败、修改后通过及崩溃边界。验证使用脚本模型，不代表真实模型的编程任务成功率。
 
 机器学习实验是建立在同一个 RuntimeExecutor 上的唯一确定性本地 workflow：检查固定本地数据集，在外部效果实验前等待审批，执行确定性普通最小二乘，验证唯一 Effect Marker，再生成报告。全过程不使用网络服务，也不增加依赖；第二个 workflow 仍 deferred。
 
@@ -344,7 +348,7 @@ reliagent workflow ml report <run_id> --workspace "$WORKSPACE"
 
 - 进程终止未知时，同一事务把调用标为 interrupted，把 running/waiting Run 标为 recoverable，核对前阻止新的执行。普通重试的预留、调度和创建事件也一起提交。启动扫描还会把未启动的 CREATED 预留报告为 `human_required` / `created_not_started`，只有显式 `ABANDON` 才释放预留，随后可提交新请求。扫描不会执行或自动重新排队，放弃也不声称成功或失败。
 
-Event 保留每个 Run 内的序号和 ToolCall 标识。Agent 循环仍只接入两个工具，恢复入口位于固定 workflow CLI，而不是交互式 CoreCoder CLI。P1 Metrics/Trace provenance 仍 deferred；由于尚未持久化 Run 级 LLM telemetry，Runtime token/cost 仍明确标为不可用。
+Event 保留每个 Run 内的序号和 ToolCall 标识。Agent 循环目前接入读、写、编辑和命令执行四个工具，恢复入口位于固定 workflow CLI，而不是交互式 CoreCoder CLI。P1 Metrics/Trace provenance 仍 deferred；由于尚未持久化 Run 级 LLM telemetry，Runtime token/cost 仍明确标为不可用。
 
 当前固定矩阵以相同输入和故障计划比较 `no_retry_no_recovery`、`full`、`no_recovery` 三种配置，属于 Runtime 内部对比：
 

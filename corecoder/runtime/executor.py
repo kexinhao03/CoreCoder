@@ -19,7 +19,7 @@ from .approvals import (
 from .faults import FaultCheckpoint, RuntimeFaultInjector
 from .models import RunRecord, ToolCallRecord
 from .policies import FailureKind, ToolPolicyRegistry
-from .processes import ManagedProcessRunner, ProcessResult, ProcessSpec
+from .processes import ManagedProcessRunner, ProcessResult, ProcessSpec, _bound_output
 from .state import ExecutionKind, RiskLevel, RunStatus, ToolCallStatus
 from .store import SQLiteStore
 
@@ -35,6 +35,7 @@ class RuntimeResult:
     call: ToolCallRecord
     output: str
     failure_kind: FailureKind | None
+    exit_code: int | None = None
 
 
 class ExecutionRefused(RuntimeError):
@@ -146,13 +147,19 @@ class RuntimeExecutor:
         approval_id: str | None = None,
         approval_experiment_id: str | None = None,
         approval_definition_hash: str | None = None,
+        cwd: Path | None = None,
+        timeout_seconds: int | None = None,
     ) -> PendingApproval | RuntimeResult:
         argv = _validated_argv(argv)
+        arguments = {"argv": list(argv)}
+        if cwd is not None:
+            arguments["cwd"] = str(cwd.resolve())
         call = self._submit(
-            run_id, tool_name, {"argv": list(argv)}, ExecutionKind.SUBPROCESS,
+            run_id, tool_name, arguments, ExecutionKind.SUBPROCESS,
             tool_call_id=tool_call_id, step_id=step_id, approval_id=approval_id,
             approval_experiment_id=approval_experiment_id,
             approval_definition_hash=approval_definition_hash,
+            timeout_seconds=timeout_seconds,
         )
         if isinstance(call, PendingApproval):
             return call
@@ -190,11 +197,16 @@ class RuntimeExecutor:
         approval_id: str | None,
         approval_experiment_id: str | None,
         approval_definition_hash: str | None,
+        timeout_seconds: int | None = None,
     ) -> PendingApproval | ToolCallRecord:
         run = self._require_running(run_id)
         policy = self._policies.resolve(tool_name)
         if policy.execution_kind is not execution_kind:
             raise ExecutionRefused(f"{execution_kind.value.replace('_', '-')} policy required")
+        if timeout_seconds is not None and (
+            type(timeout_seconds) is not int or not 0 < timeout_seconds <= policy.timeout_seconds
+        ):
+            raise ValueError("timeout must be a positive integer within the tool policy limit")
         idempotency_key = None
         if policy.idempotent:
             identity = json.dumps(
@@ -212,7 +224,7 @@ class RuntimeExecutor:
                 execution_kind=policy.execution_kind,
                 idempotent=policy.idempotent,
                 idempotency_key=idempotency_key,
-                timeout_seconds=policy.timeout_seconds,
+                timeout_seconds=policy.timeout_seconds if timeout_seconds is None else timeout_seconds,
                 step_id=step_id,
                 tool_call_id=tool_call_id,
             )
@@ -399,7 +411,7 @@ class RuntimeExecutor:
         try:
             spec = ProcessSpec(
                 argv=argv,
-                cwd=Path(run.workspace),
+                cwd=Path(arguments.get("cwd", run.workspace)),
                 timeout_seconds=call.timeout_seconds,
                 output_limit=policy.output_limit,
                 termination_grace_seconds=1.0,
@@ -407,7 +419,15 @@ class RuntimeExecutor:
             if cancellation.is_set():
                 result = ProcessResult(None, "", "", 0.0, FailureKind.CANCELLED, True)
             else:
-                result = self._process_runner.run(spec, cancellation)
+                try:
+                    result = self._process_runner.run(spec, cancellation)
+                except (KeyboardInterrupt, SystemExit) as error:
+                    self._store.transition_tool_call(
+                        call.id, ToolCallStatus.INTERRUPTED, "tool.interrupted",
+                        result_summary=type(error).__name__,
+                        payload={"failure_kind": FailureKind.TERMINATION_UNKNOWN.value, "reason": "execution_interrupted"},
+                    )
+                    raise
             if result.process_evidence is not None:
                 self._store.record_process_evidence(call.id, result.process_evidence)
             if (
@@ -436,15 +456,15 @@ class RuntimeExecutor:
         output = result.stdout
         if result.stderr:
             output += "\n[stderr]\n" + result.stderr
-        output = output[:policy.output_limit]
+        output = _bound_output(output, policy.output_limit)
         call = self._store.transition_tool_call(
             call.id,
             status,
             event,
-            result_summary=output,
+            result_summary=_bound_output(output, 2000),
             payload={
                 "exit_code": result.exit_code,
                 "failure_kind": failure_kind.value if failure_kind else None,
             },
         )
-        return RuntimeResult(call, output, failure_kind)
+        return RuntimeResult(call, output, failure_kind, result.exit_code)

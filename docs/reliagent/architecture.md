@@ -4,13 +4,12 @@
 
 ReliAgent is a reliability Runtime layered onto the CoreCoder fork. Its source
 of truth is the SQLite store, which persists Run, Step, ToolCall, Approval, and
-Event facts. The default CoreCoder Agent path is deliberately narrow: only
-`read_file` and `write_file` are wrapped by `RuntimeToolAdapter`. The other
+Event facts. The default CoreCoder Agent path is deliberately narrow: `read_file`, `write_file`, `edit_file`, and `bash` are wrapped by `RuntimeToolAdapter`. The other
 Agent tools do not yet enter this Runtime boundary.
 
 ```mermaid
 flowchart LR
-    A[CoreCoder Agent] --> T[RuntimeToolAdapter: read_file / write_file only]
+    A[CoreCoder Agent] --> T[RuntimeToolAdapter: read_file / write_file / edit_file / bash]
     C[reliagent fixed-workflow CLI] --> E[RuntimeExecutor]
     T --> E
     E --> P[Policy and approval]
@@ -19,6 +18,8 @@ flowchart LR
     S --> R[RecoveryManager]
     R -->|safe retry or human reconciliation| E
 ```
+
+Runtime-containing Agent batches execute sequentially on the caller thread; other batches retain the original thread pool. A shared per-session gate also protects direct concurrent calls. Bash uses the managed subprocess runner with persisted cwd and bounded per-call timeout, while file tools remain synchronous in-process operations. Edit bodies and shell source are hash-summarized and non-replayable after restart. See [coding-chain verification](coding-chain.md).
 
 The Runtime records `tool.started` before subprocess launch and a terminal
 observation afterward. An approval is bound to one ToolCall attempt and its

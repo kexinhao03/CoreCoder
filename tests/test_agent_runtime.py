@@ -1,9 +1,8 @@
 """The production CLI builder records real Agent tool execution offline."""
 
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from threading import Barrier, Event, Lock
+from threading import Event, Lock
 from typing import ClassVar
 
 import pytest
@@ -111,16 +110,6 @@ def test_parallel_writes_serialize_approval_and_preserve_decisions(
         {"file_path": str(allowed), "content": "approved raw body\n"},
         {"file_path": str(other), "content": "other raw body\n"},
     ]
-    # Align both worker calls before the real Runtime adapter lifecycle.
-    # This controls scheduling only; Permission, adapters and persistence are real.
-    ready = Barrier(2)
-    execute = RuntimeToolAdapter.execute
-
-    def simultaneous_requests(self, **raw_arguments):
-        ready.wait(timeout=5)
-        return execute(self, **raw_arguments)
-
-    monkeypatch.setattr(RuntimeToolAdapter, "execute", simultaneous_requests)
     state_lock = Lock()
     overlapped = Event()
     active = peak = 0
@@ -192,108 +181,28 @@ def test_parallel_writes_serialize_approval_and_preserve_decisions(
     )
 
 
-def test_read_execution_does_not_acquire_write_gate(tmp_path):
+@pytest.mark.parametrize("second_tool", ["read_file", "write_file"])
+def test_parallel_runtime_reads_and_writes_complete_serially(tmp_path, monkeypatch, second_tool):
     source = tmp_path / "source.txt"
-    source.write_text("read without write gate\n", encoding="utf-8")
-    agent, session = cli._build_agent(
-        ScriptedLLM([
-            LLMResponse(tool_calls=[ToolCall(id="read-1", name="read_file", arguments={"file_path": str(source)})]),
-            LLMResponse(content="Read completed."),
-        ]),
-        Config(), Permission(), runtime_workspace=tmp_path, runtime_enabled=True,
-    )
-
-    with ThreadPoolExecutor(max_workers=1) as pool, session._write_gate:
-        assert pool.submit(agent.chat, "Read the source.").result(timeout=5) == "Read completed."
-    session.finish(RunStatus.SUCCEEDED)
-
-    results = [m["content"] for m in agent.messages if m["role"] == "tool"]
-    assert len(results) == 1
-    assert "read without write gate" in results[0]
-    assert [call.status.value for call in session.store.list_tool_calls(session.run_id)] == ["succeeded"]
-    assert session.store.list_approvals(session.run_id) == []
-
-
-def test_parallel_runtime_reads_settle_refused_step_and_allow_run_to_finish(
-    tmp_path, monkeypatch,
-):
-    class BlockingReadTool(Tool):
-        name = "read_file"
-        description = "Block one real read while its contender reaches Runtime admission"
-        parameters: ClassVar[dict] = {
-            "type": "object",
-            "properties": {"file_path": {"type": "string"}},
-            "required": ["file_path"],
-        }
-
-        def execute(self, file_path: str) -> str:
-            admitted_execution.set()
-            assert release_execution.wait(timeout=5)
-            return f"read succeeded: {file_path}"
-
-    admitted_execution = Event()
-    release_execution = Event()
-    contender_finished_admission = Event()
-    monkeypatch.setattr(cli, "ALL_TOOLS", [BlockingReadTool()])
+    source.write_text("read evidence", encoding="utf-8")
+    target = source if second_tool == "read_file" else tmp_path / "target.txt"
+    second_args = {"file_path": str(target)}
+    if second_tool == "write_file":
+        second_args["content"] = "write evidence"
     agent, session = cli._build_agent(
         ScriptedLLM([
             LLMResponse(tool_calls=[
-                ToolCall(
-                    id="read-a", name="read_file",
-                    arguments={"file_path": str(tmp_path / "a.txt")},
-                ),
-                ToolCall(
-                    id="read-b", name="read_file",
-                    arguments={"file_path": str(tmp_path / "b.txt")},
-                ),
+                ToolCall(id="read", name="read_file", arguments={"file_path": str(source)}),
+                ToolCall(id="second", name=second_tool, arguments=second_args),
             ]),
-            LLMResponse(content="Parallel batch handled."),
-        ]),
-        Config(), Permission(), runtime_workspace=tmp_path, runtime_enabled=True,
+            LLMResponse(content="done"),
+        ]), Config(), Permission(allow_all=True), runtime_workspace=tmp_path, runtime_enabled=True,
     )
-
-    # Deterministically order only admission: the real Store method still
-    # enforces the one-active-ToolCall invariant for the contender.
-    original_create_tool_call = session.store.create_tool_call
-    admission_lock = Lock()
-    first_admitted = Event()
-    leader_chosen = False
-
-    def ordered_create_tool_call(**kwargs):
-        nonlocal leader_chosen
-        with admission_lock:
-            leader = not leader_chosen
-            leader_chosen = True
-        if leader:
-            call = original_create_tool_call(**kwargs)
-            first_admitted.set()
-            return call
-        assert first_admitted.wait(timeout=5)
-        try:
-            return original_create_tool_call(**kwargs)
-        finally:
-            contender_finished_admission.set()
-
-    monkeypatch.setattr(session.store, "create_tool_call", ordered_create_tool_call)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        chat = pool.submit(agent.chat, "Read both files.")
-        assert admitted_execution.wait(timeout=5)
-        assert contender_finished_admission.wait(timeout=5)
-        release_execution.set()
-        assert chat.result(timeout=5) == "Parallel batch handled."
-
-    steps = session.store.list_steps(session.run_id)
-    calls = session.store.list_tool_calls(session.run_id)
-    results = [
-        message["content"] for message in agent.messages
-        if message["role"] == "tool"
+    assert agent.chat("Handle both calls.") == "done"
+    assert [call.status for call in session.store.list_tool_calls(session.run_id)] == [
+        ToolCallStatus.SUCCEEDED, ToolCallStatus.SUCCEEDED,
     ]
-    assert sorted(step.status for step in steps) == [StepStatus.FAILED, StepStatus.SUCCEEDED]
-    assert [call.status for call in calls] == [ToolCallStatus.SUCCEEDED]
-    assert sum(result.startswith("read succeeded:") for result in results) == 1
-    assert results.count(
-        "Error executing read_file: run already has an active tool call"
-    ) == 1
+    assert all(step.status is StepStatus.SUCCEEDED for step in session.store.list_steps(session.run_id))
     assert session.finish(RunStatus.SUCCEEDED).status is RunStatus.SUCCEEDED
 
 
@@ -315,7 +224,7 @@ def test_builder_preserves_unwrapped_tools_and_tool_order(tmp_path, monkeypatch)
     originals = [*ALL_TOOLS, mcp_tool]
     assert [tool.name for tool in agent.tools] == [tool.name for tool in originals]
     for original, wrapped in zip(originals, agent.tools):
-        if original.name in {"read_file", "write_file"}:
+        if original.name in {"read_file", "write_file", "edit_file", "bash"}:
             assert isinstance(wrapped, RuntimeToolAdapter)
             assert wrapped.schema() == original.schema()
         else:

@@ -28,8 +28,8 @@ class AgentRuntimeSession:
     executor: RuntimeExecutor
     run_id: str
     permission: Permission
-    # A Run admits one active ToolCall; finish each write before starting the next.
-    _write_gate: AbstractContextManager = field(default_factory=Lock, init=False, repr=False)
+    # A Run admits one active ToolCall, including while approval is pending.
+    _execution_gate: AbstractContextManager = field(default_factory=Lock, init=False, repr=False)
 
     @classmethod
     def open(cls, workspace: Path, model: str, permission: Permission) -> AgentRuntimeSession:
@@ -54,9 +54,9 @@ class AgentRuntimeSession:
             RuntimeToolAdapter(
                 tool, self.store, self.executor, self.run_id,
                 approval_handler=self._decide_approval,
-                execution_gate=self._write_gate if tool.name == "write_file" else None,
+                execution_gate=self._execution_gate,
             )
-            if tool.name in {"read_file", "write_file"} else tool
+            if tool.name in {"read_file", "write_file", "edit_file", "bash"} else tool
             for tool in tools
         ]
 

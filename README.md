@@ -12,7 +12,7 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml)
-[![engine](https://img.shields.io/badge/engine-1175_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index_EN.md)
+[![engine](https://img.shields.io/badge/engine-1182_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index_EN.md)
 [![essays](https://img.shields.io/badge/source--reading-8_bilingual-orange)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index_EN.md)
 
 </div>
@@ -29,7 +29,7 @@ links intentionally continue to point to that source.
 | Area | Delivery boundary and source of truth |
 | --- | --- |
 | Upstream baseline | CoreCoder's original agent, essays, and assets are fixed at upstream commit [`069948d180cb0ceb1a6d7aafeb0e141c166a009d`](https://github.com/he-yufeng/CoreCoder/commit/069948d180cb0ceb1a6d7aafeb0e141c166a009d). The local-only `.gitignore` setup commit is `c45968d527944386015750f98bcd76ef91277576`; the first ReliAgent commit is its child `da7ad0fdcca4e392b2bbc01419fe4cb510a8fec5`. |
-| Runtime | This fork adds the Runtime. The default Agent path wraps **only** `read_file` and `write_file` through it; other Agent tools are not Runtime-managed. |
+| Runtime | This fork adds the Runtime. The default Agent path wraps `read_file`, `write_file`, `edit_file`, and `bash` through it; other Agent tools are not Runtime-managed. |
 | Recovery CLI | The `reliagent` CLI exposes fixed workflow recovery and reconciliation; it is not an interactive-Agent recovery surface. |
 | Evaluation | Results compare three **Runtime configurations**—`no_retry_no_recovery`, `full`, and `no_recovery`—not an external baseline. |
 | ML workflow | One deterministic local workflow is present. A second workflow remains deferred. |
@@ -45,7 +45,7 @@ Please file changes and issues in this fork: [kexinhao03/CoreCoder issues](https
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| Lines of code | ~1,175 engine / 9,100 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
+| Lines of code | ~1,182 engine / 9,163 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
 | Time to read it all | one afternoon | can't (closed) | a few days of slogging | one afternoon |
 | Breakpoint, change, rerun? | yes, every line | no | yes, but there's a lot | yes |
 | What it's for | understand one, then fork your own | production coding assistant | terminal pair-programming | minimal GPT for teaching |
@@ -56,7 +56,7 @@ The nanoGPT column is there as a reference point: minimal, readable, but it teac
 
 I've always felt coding agents get talked about as if they were arcane. Strip a tool like Claude Code or Cursor all the way down and the core is a `while` loop wrapped around a large model, plus seven or eight tools that let it actually do things. The hard part was never the loop; it's everything the loop has to cope with once it meets the real world. CoreCoder is the minimal version that writes that core out honestly.
 
-The engine (loop, model interface, context, tools, sessions) is 1,175 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the whole committed package is 64 files: 10,181 physical lines, 9,100 net. These values use the `tests/test_core.py` source-of-truth calculation: the engine is `agent.py`, `llm.py`, `context.py`, `session.py`, and `corecoder/tools/*.py`; package totals are all `corecoder/**/*.py` files. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime and ML workflow, each documented below.
+The engine (loop, model interface, context, tools, sessions) is 1,182 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the current source package is 64 files: 10,252 physical lines, 9,163 net. These values use the `tests/test_core.py` source-of-truth calculation: the engine is `agent.py`, `llm.py`, `context.py`, `session.py`, and `corecoder/tools/*.py`; package totals are all `corecoder/**/*.py` files. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime and ML workflow, each documented below.
 
 And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. The current full-suite result is recorded with the checked-in Runtime evidence instead of freezing a count in this overview; one live-model integration test is opt-in. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
@@ -283,9 +283,13 @@ Each configured server starts as a subprocess at launch, handshakes, and lists i
 
 ## ReliAgent runtime and deterministic ML workflow
 
-`corecoder.runtime` exposes durable Run, ToolCall, Event, and SQLiteStore APIs alongside approval records, policies, `ManagedProcessRunner`, `RuntimeExecutor`, and `RecoveryManager`. The default Agent loop routes **only** built-in `read_file` and approval-gated `write_file` through `RuntimeToolAdapter`; the separate `reliagent` CLI owns fixed-workflow recovery and reconciliation. Other Agent tools are not Runtime-managed.
+`corecoder.runtime` exposes durable Run, ToolCall, Event, and SQLiteStore APIs alongside approval records, policies, `ManagedProcessRunner`, `RuntimeExecutor`, and `RecoveryManager`. The default Agent loop routes built-in `read_file`, `write_file`, `edit_file`, and `bash` through `RuntimeToolAdapter`; the separate `reliagent` CLI owns fixed-workflow recovery and reconciliation. Other Agent tools are not Runtime-managed.
 
-One Runtime Run admits only one active ToolCall. Same-session `write_file` calls are serialized across submission, approval, and execution. `read_file` deliberately does not take that write gate, so parallel `read_file`/`read_file` and `read_file`/`write_file` batches are **not supported** in one Run: a contender can be refused with `run already has an active tool call`. Use sequential calls or separate Runs; this release does not claim Runtime-managed parallel reads.
+One Runtime Run admits only one active ToolCall. Batches containing Runtime-managed tools execute sequentially on the caller thread, in model-supplied order, so Ctrl+C reaches process cleanup before the next call starts. A shared session gate also serializes their submission, approval, and execution when called from other threads. Entirely unmanaged batches retain the original parallel behavior. This does not provide Runtime-managed parallel reads.
+
+`bash` uses the managed subprocess runner rather than the legacy `BashTool.execute` path. It retains the dangerous-command check, requires approval, records its working directory and timeout (default and maximum 120 seconds), and never automatically retries. Shell directory tracking follows the existing simple `cd` heuristic. Editing failures are recorded as failed calls. Edit bodies and opaque shell command bodies are stored as hash summaries; raw arguments remain available only in the current executor for approval and execution, and cannot be replayed after a restart.
+
+The offline [coding-chain verification](docs/reliagent/coding-chain.md) exercises real file reads, edits, and test subprocesses through the production Agent builder, including failing-before/passing-after tests and crash boundaries. It uses a scripted model and does not measure live-model coding success.
 
 The ML experiment is the one current deterministic local workflow over the same RuntimeExecutor. It validates a fixed local dataset, pauses before the external-effect experiment, runs deterministic ordinary least squares, verifies one effect marker, and writes reports. It uses no network service or extra dependency. A second workflow is deferred.
 
@@ -355,7 +359,7 @@ The last command creates `reports/<run_id>/ml-experiment-result.json` and `ml-ex
 - Run cancellation first commits the cancelled state, closing admission of new calls and retries, then signals active work. In-process operations receive a cooperative `threading.Event`; cancellation cannot force-stop a callable, enforce its deadline, or roll back effects already performed. A returned cancelled status is not proof of effect rollback.
 - Unknown process termination atomically marks the call interrupted and its running/waiting Run recoverable, blocking new execution until reconciliation. Ordinary retry reservation and its scheduling/creation events commit together. Startup also exposes never-started CREATED reservations as `human_required` / `created_not_started`; only explicit `ABANDON` releases them, after which callers may submit a fresh request. Scan never runs or automatically requeues them, and abandonment does not assert success or failure.
 
-Events retain per-Run sequence and ToolCall identifiers for inspection. Agent-loop integration remains intentionally limited to two tools, and recovery is exposed by the fixed-workflow CLI rather than the interactive CoreCoder CLI. P1 Metrics/Trace provenance is deferred; Runtime token/cost remains unavailable because Run-scoped LLM telemetry is not persisted.
+Events retain per-Run sequence and ToolCall identifiers for inspection. Agent-loop integration remains limited to read/write/edit/bash, and recovery is exposed by the fixed-workflow CLI rather than the interactive CoreCoder CLI. P1 Metrics/Trace provenance is deferred; Runtime token/cost remains unavailable because Run-scoped LLM telemetry is not persisted.
 
 The current fixed matrix compares `no_retry_no_recovery`, `full`, and `no_recovery` under the same inputs and fault schedules; it is an internal Runtime comparison:
 

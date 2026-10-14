@@ -123,45 +123,57 @@ class ManagedProcessRunner:
 
         failure_kind = None
         termination_confirmed = True
-        while True:
-            remaining = spec.timeout_seconds - (monotonic() - started_at)
-            cancelled = cancellation_event.is_set()
-            if cancelled or remaining <= 0:
-                # A completed process wins a race with cancellation or the deadline.
-                if _termination_confirmed(process):
+        try:
+            while True:
+                remaining = spec.timeout_seconds - (monotonic() - started_at)
+                cancelled = cancellation_event.is_set()
+                if cancelled or remaining <= 0:
+                    # A completed process wins a race with cancellation or the deadline.
+                    if _termination_confirmed(process):
+                        try:
+                            stdout_bytes, stderr_bytes = process.communicate(timeout=0.05)
+                            break
+                        except subprocess.TimeoutExpired:
+                            pass
+
+                    failure_kind = FailureKind.CANCELLED if cancelled else FailureKind.TIMED_OUT
+                    termination_confirmed = _terminate(process, spec.termination_grace_seconds)
                     try:
-                        stdout_bytes, stderr_bytes = process.communicate(timeout=0.05)
-                        break
-                    except subprocess.TimeoutExpired:
-                        pass
-
-                failure_kind = FailureKind.CANCELLED if cancelled else FailureKind.TIMED_OUT
-                termination_confirmed = _terminate(process, spec.termination_grace_seconds)
-                try:
-                    stdout_bytes, stderr_bytes = process.communicate(
-                        timeout=max(spec.termination_grace_seconds, 0.1),
-                    )
-                except subprocess.TimeoutExpired as error:
-                    stdout_bytes = error.output or b""
-                    stderr_bytes = error.stderr or b""
-                    termination_confirmed = False
-                    if os.name == "posix":
-                        process.stdout.close()
-                        process.stderr.close()
-                    # Windows communicate readers own the pipes until EOF; close may block.
-                if not termination_confirmed:
-                    failure_kind = FailureKind.TERMINATION_UNKNOWN
-                break
-
-            try:
-                stdout_bytes, stderr_bytes = process.communicate(timeout=min(0.05, remaining))
-                if _termination_confirmed(process):
+                        stdout_bytes, stderr_bytes = process.communicate(
+                            timeout=max(spec.termination_grace_seconds, 0.1),
+                        )
+                    except subprocess.TimeoutExpired as error:
+                        stdout_bytes = error.output or b""
+                        stderr_bytes = error.stderr or b""
+                        termination_confirmed = False
+                        if os.name == "posix":
+                            process.stdout.close()
+                            process.stderr.close()
+                        # Windows communicate readers own the pipes until EOF; close may block.
+                    if not termination_confirmed:
+                        failure_kind = FailureKind.TERMINATION_UNKNOWN
                     break
-                # EOF and parent exit do not prove redirected descendants have stopped.
-                time.sleep(min(0.01, remaining))
+
+                try:
+                    stdout_bytes, stderr_bytes = process.communicate(timeout=min(0.05, remaining))
+                    if _termination_confirmed(process):
+                        break
+                    # EOF and parent exit do not prove redirected descendants have stopped.
+                    time.sleep(min(0.01, remaining))
+                except subprocess.TimeoutExpired:
+                    # communicate retains cumulative bytes; retrying must not append them.
+                    pass
+
+        except BaseException:
+            # An interrupted caller must not leave its command running.
+            _terminate(process, spec.termination_grace_seconds)
+            try:
+                process.communicate(timeout=max(spec.termination_grace_seconds, 0.1))
             except subprocess.TimeoutExpired:
-                # communicate retains cumulative bytes; retrying must not append them.
-                pass
+                if os.name == "posix":
+                    process.stdout.close()
+                    process.stderr.close()
+            raise
 
         if failure_kind is None and process.returncode != 0:
             failure_kind = FailureKind.NONZERO_EXIT

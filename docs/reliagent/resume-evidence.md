@@ -5,7 +5,9 @@
 > Added a SQLite-backed reliability Runtime to a CoreCoder fork, with persisted
 > Run/Step/ToolCall/Approval/Event state, approval-gated execution, bounded
 > recovery and reconciliation entry points, and narrow Agent integration for
-> `read_file` and `write_file`.
+> `read_file`, `write_file`, `edit_file`, and managed `bash` commands.
+
+The additional coding-chain integration is verified separately in [coding-chain.md](coding-chain.md); the frozen `a7579ac` snapshot below predates it.
 
 Evidence is in `corecoder/runtime/`, `corecoder/reliagent.py`,
 `corecoder/reliagent_cli.py`, and the focused Runtime tests. This wording does

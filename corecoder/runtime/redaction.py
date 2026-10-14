@@ -68,14 +68,23 @@ def redact_text(text: str) -> str:
 def redact_for_storage(tool_name: str, arguments: dict) -> tuple[dict, bool]:
     """Return redacted arguments and whether they remain replayable."""
     stored = redact(arguments)
-    if tool_name == "write_file" and isinstance(arguments.get("content"), str):
-        raw = arguments["content"].encode("utf-8")
-        stored["content"] = {
-            "redacted": True,
-            "bytes": len(raw),
-            "sha256": hashlib.sha256(raw).hexdigest(),
-        }
+    body_keys = {"write_file": ("content",), "edit_file": ("old_string", "new_string")}
+    for key in body_keys.get(tool_name, ()):
+        if isinstance(arguments.get(key), str):
+            stored[key] = _body_summary(arguments[key])
+    argv = arguments.get("argv")
+    if (
+        tool_name == "bash" and isinstance(argv, list) and len(argv) == 3
+        and (argv[:2] == ["/bin/sh", "-c"] or argv[1] == "/c") and isinstance(argv[2], str)
+    ):
+        # Shell source is opaque: flag-based argv redaction cannot parse it safely.
+        stored["argv"][2] = _body_summary(argv[2])
     return stored, stored == arguments
+
+
+def _body_summary(text: str) -> dict:
+    raw = text.encode("utf-8")
+    return {"redacted": True, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
 def _is_sensitive_key(key: object) -> bool:

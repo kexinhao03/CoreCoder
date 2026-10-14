@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
+from pathlib import Path
 from typing import ClassVar
 
 from corecoder.tools.base import Tool
+from corecoder.tools.bash import _check_dangerous, _update_cwd
 
 from .approvals import ApprovalDecision, ApprovalRecord
 from .executor import PendingApproval, RuntimeExecutor, RuntimeResult
@@ -41,6 +44,7 @@ class RuntimeToolAdapter(Tool):
         self.name = tool.name
         self.description = tool.description
         self.parameters = tool.parameters
+        self._cwd = Path.cwd()
 
     def execute(self, **kwargs) -> str:
         with self._execution_gate:
@@ -54,13 +58,12 @@ class RuntimeToolAdapter(Tool):
         )
         self._store.transition_step(step.id, StepStatus.RUNNING, "step.started")
         try:
-            result = self._executor.submit_in_process(
-                self._run_id,
-                self.name,
-                kwargs,
-                self._execute_tool,
-                step_id=step.id,
-            )
+            if self.name == "bash":
+                result = self._submit_bash(step.id, **kwargs)
+            else:
+                result = self._executor.submit_in_process(
+                    self._run_id, self.name, kwargs, self._execute_tool, step_id=step.id,
+                )
         except BaseException:
             self._settle_interrupted_step(step.id)
             raise
@@ -87,17 +90,31 @@ class RuntimeToolAdapter(Tool):
                 "step.resumed",
             )
             try:
-                result = self._executor.execute_approved_in_process(
-                    result.call.id,
-                    self._execute_tool,
-                )
+                if self.name == "bash":
+                    result = self._executor.execute_approved_subprocess(result.call.id)
+                else:
+                    result = self._executor.execute_approved_in_process(result.call.id, self._execute_tool)
             except BaseException:
                 self._settle_interrupted_step(step.id)
                 raise
+        if self.name == "bash" and result.call.status is ToolCallStatus.SUCCEEDED:
+            self._cwd = Path(_update_cwd(kwargs["command"], str(self._cwd)))
         return self._finish_step(step.id, result)
 
+    def _submit_bash(self, step_id: str, command: str, timeout: int = 120) -> PendingApproval | RuntimeResult:
+        warning = _check_dangerous(command)
+        if warning:
+            raise ValueError(f"Blocked: {warning}")
+        argv = [os.environ.get("COMSPEC", "cmd.exe"), "/c", command] if os.name == "nt" else ["/bin/sh", "-c", command]
+        return self._executor.submit_subprocess(
+            self._run_id, self.name, argv, step_id=step_id, cwd=self._cwd, timeout_seconds=timeout,
+        )
+
     def _execute_tool(self, arguments: dict, _cancellation) -> str:
-        return self._tool.execute(**arguments)
+        output = self._tool.execute(**arguments)
+        if output.startswith("Error:"):
+            raise RuntimeError(output)
+        return output
 
     def _settle_interrupted_step(self, step_id: str) -> None:
         calls = [
@@ -126,6 +143,8 @@ class RuntimeToolAdapter(Tool):
                 StepStatus.SUCCEEDED,
                 "step.completed",
             )
+            if self.name == "bash":
+                return result.output.strip() or "(no output)"
             return result.output
         status = (
             StepStatus.CANCELLED
@@ -134,4 +153,6 @@ class RuntimeToolAdapter(Tool):
         )
         self._store.transition_step(step_id, status, f"step.{status.value}")
         detail = result.output or result.call.status.value
+        if result.exit_code is not None:
+            detail += f"\n[exit code: {result.exit_code}]"
         return f"Error executing {self.name}: {detail}"

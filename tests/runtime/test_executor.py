@@ -587,7 +587,12 @@ def test_output_and_store_summary_are_bounded(running_store, limit):
     )
     result = executor.submit_subprocess("run-1", "probe", ("command",))
     assert len(result.output) == limit
-    assert result.call.result_summary == result.output[:2000]
+    assert len(result.call.result_summary) == min(limit, 2000)
+    if limit <= 2000:
+        assert result.call.result_summary == result.output
+    else:
+        assert result.call.result_summary[:100] == result.output[:100]
+        assert result.call.result_summary[-100:] == result.output[-100:]
 
 
 def test_idempotency_key_is_stable_and_sensitive_to_command(running_store):

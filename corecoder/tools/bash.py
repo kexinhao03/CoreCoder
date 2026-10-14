@@ -132,3 +132,4 @@ def _update_cwd(command: str, current_cwd: str):
                     changed = True
     if changed:
         _local.cwd = running
+    return running
