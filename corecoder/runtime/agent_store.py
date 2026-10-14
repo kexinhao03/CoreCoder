@@ -328,15 +328,23 @@ class AgentJournal:
             state["blocked_reason"] = reason
             self._write_state(connection, row, state, "blocked")
 
-    def result_token(self, invocation_id: str, output: str) -> bytes:
+    def result_token(self, invocation_id: str, output: str, *, state_updates: dict | None = None) -> bytes:
         if not isinstance(output, str):
             raise TypeError("tool output must be a string")
+        updates = state_updates or {}
+        if set(updates) - {"todo", "cwd"}:
+            raise ValueError("only todo and cwd terminal state updates are allowed")
+        if "todo" in updates and not isinstance(updates["todo"], list):
+            raise ValueError("todo snapshot must be a list")
+        if "cwd" in updates and not isinstance(updates["cwd"], str):
+            raise ValueError("cwd snapshot must be a string")
         with closing(self.store._connect()) as connection:
             row = self._get_invocation(connection, invocation_id)
             self._load(connection, row["run_id"])
             return self.cipher.seal(
                 self._invocation_identity(row, "result"),
-                {"output": output, "message": {"role": "tool", "tool_call_id": row["provider_call_id"], "content": output}},
+                {"output": output, "message": {"role": "tool", "tool_call_id": row["provider_call_id"], "content": output},
+                 "state_updates": updates},
             )
 
     def _complete(self, connection, invocation, token: bytes, *, reconciled: bool = False) -> None:
@@ -359,6 +367,10 @@ class AgentJournal:
         connection.execute(
             "UPDATE agent_invocations SET state = 'completed', result_ciphertext = ? WHERE id = ?", (token, invocation["id"])
         )
+        updates = payload.get("state_updates", {})
+        if not isinstance(updates, dict) or set(updates) - {"todo", "cwd"}:
+            raise ValueError("invalid terminal state updates")
+        state.update(updates)
         state.setdefault("messages", []).append(message)
         self._write_state(connection, row, state, row["phase"])
 

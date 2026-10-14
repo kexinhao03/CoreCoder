@@ -38,6 +38,7 @@ class StepStatus(str, Enum):
 
 class RiskLevel(str, Enum):
     READ_ONLY = "read_only"
+    INTERNAL_STATE = "internal_state"
     MUTATING = "mutating"
     EXTERNAL_EFFECT = "external_effect"
 

@@ -42,6 +42,18 @@ class ExecutionRefused(RuntimeError):
     pass
 
 
+class UnknownEffect(RuntimeError):
+    """An operation cannot establish whether its external effect completed."""
+
+
+@dataclass(frozen=True)
+class AgentExecution:
+    journal: object
+    invocation_id: str
+    finalize: Callable[[str, FailureKind | None, int | None], tuple[str, dict]]
+    before_execute: Callable[[threading.Event], str | None] | None = None
+
+
 def _validated_argv(argv: object) -> tuple[str, ...]:
     if not isinstance(argv, Sequence) or isinstance(argv, (str, bytes)):
         raise ValueError("argv must be a nonempty sequence of strings")  # noqa: TRY004 - argv contract
@@ -68,6 +80,7 @@ class RuntimeExecutor:
         self._process_runner = process_runner or ManagedProcessRunner()
         self._fault_injector = fault_injector
         self._execution_arguments: dict[str, dict] = {}
+        self._agent_executions: dict[str, AgentExecution] = {}
         self._active_cancellations: dict[str, tuple[str, threading.Event]] = {}
         self._cancellation_monitor_stops: dict[str, threading.Event] = {}
         self._cancellation_monitor_threads: dict[str, threading.Thread] = {}
@@ -78,6 +91,90 @@ class RuntimeExecutor:
 
     def _discard_execution_arguments(self, call_id: str) -> None:
         self._execution_arguments.pop(call_id, None)
+        self._agent_executions.pop(call_id, None)
+
+    def execute_agent_invocation(
+        self, journal, invocation: dict, arguments: dict, *, operation=None,
+        operation_arguments: dict | None = None, timeout_seconds: int | None = None,
+        decide_approval: Callable[[ApprovalRecord, dict], str | None],
+        finalize: Callable[[str, FailureKind | None, int | None], tuple[str, dict]],
+        before_execute: Callable[[threading.Event], str | None] | None = None,
+    ) -> RuntimeResult:
+        """Execute or restore one bound invocation; provider args never become argv.
+
+        The caller holds the Run lease and has validated its checkpoint metadata.
+        ``operation`` can run independently journaled child work; UnknownEffect
+        must be raised whenever its remote/child outcome cannot be established.
+        """
+        saved = next((item for item in journal.list_invocations(invocation["run_id"])
+                      if item["id"] == invocation["id"]), None)
+        if saved is None or any(saved[field] != invocation[field] for field in (
+            "run_id", "turn_sequence", "provider_call_id", "ordinal", "tool_name", "attempt_id",
+        )):
+            raise ValueError("agent invocation identity mismatch")
+        original = json.loads(saved["arguments"]) if isinstance(saved["arguments"], str) else saved["arguments"]
+        if original != arguments:
+            raise ValueError("execution arguments differ from original provider arguments")
+        invocation = saved
+        policy = self._policies.resolve(invocation["tool_name"])
+        attempt_id = invocation["attempt_id"]
+        if attempt_id is None:
+            submitted = self._submit(
+                invocation["run_id"], invocation["tool_name"], arguments, policy.execution_kind,
+                tool_call_id=None, step_id=None, approval_id=None,
+                approval_experiment_id=None, approval_definition_hash=None,
+                timeout_seconds=timeout_seconds, agent_invocation_id=invocation["id"],
+            )
+            call = submitted.call if isinstance(submitted, PendingApproval) else submitted
+        else:
+            call = self._store.get_tool_call(attempt_id)
+            if call.status not in {ToolCallStatus.CREATED, ToolCallStatus.WAITING_APPROVAL}:
+                raise ExecutionRefused("agent invocation is not unstarted")
+            if (call.risk_level is not policy.risk_level or call.execution_kind is not policy.execution_kind
+                    or call.idempotent != policy.idempotent
+                    or call.timeout_seconds != (policy.timeout_seconds if timeout_seconds is None else timeout_seconds)):
+                raise ValueError("restored attempt policy differs from original execution policy")
+        self._execution_arguments[call.id] = deepcopy(operation_arguments if operation_arguments is not None else arguments)
+        self._agent_executions[call.id] = AgentExecution(journal, invocation["id"], finalize, before_execute)
+        try:
+            approval = self._store.get_approval_for_tool_call(call.id)
+            if approval is None and policy.requires_approval:
+                approval = self._store.request_approval(
+                    call.id, arguments_summary=summarize_arguments(call.arguments),
+                    workspace=self._store.get_run(call.run_id).workspace, risk_reason=policy.risk_level.value,
+                )
+            if approval is not None and approval.status is ApprovalStatus.PENDING:
+                refusal = decide_approval(approval, arguments)
+                if refusal is not None:
+                    token = journal.result_token(invocation["id"], refusal)
+                    self._store.resolve_approval(approval.id, ApprovalDecision.DENY, agent_result=token)
+                    return RuntimeResult(self._store.get_tool_call(call.id), refusal, None)
+                self._store.resolve_approval(approval.id, ApprovalDecision.ALLOW_ONCE)
+            if approval is not None:
+                call = self._approved_call(call.id)
+            if policy.execution_kind is ExecutionKind.SUBPROCESS:
+                return self._execute_subprocess(call)
+            if operation is None:
+                raise ExecutionRefused("in-process operation is required")
+            return self._execute_in_process(call, operation)
+        finally:
+            self._discard_execution_arguments(call.id)
+
+    def _before_agent_execution(self, call, cancellation):
+        context = self._agent_executions.get(call.id)
+        if context is None or context.before_execute is None:
+            return None
+        try:
+            return context.before_execute(cancellation)
+        except Exception as error:
+            raise UnknownEffect("pre-operation outcome requires reconciliation") from error
+
+    def _agent_result(self, call, output, failure_kind, exit_code=None):
+        context = self._agent_executions.get(call.id)
+        if context is None:
+            return output, None
+        output, updates = context.finalize(output, failure_kind, exit_code)
+        return output, context.journal.result_token(context.invocation_id, output, state_updates=updates)
 
     def cancel_run(self, run_id: str) -> RunRecord:
         run = self._store.cancel_run(run_id)
@@ -204,6 +301,7 @@ class RuntimeExecutor:
         approval_experiment_id: str | None,
         approval_definition_hash: str | None,
         timeout_seconds: int | None = None,
+        agent_invocation_id: str | None = None,
     ) -> PendingApproval | ToolCallRecord:
         run = self._require_running(run_id)
         policy = self._policies.resolve(tool_name)
@@ -233,6 +331,7 @@ class RuntimeExecutor:
                 timeout_seconds=policy.timeout_seconds if timeout_seconds is None else timeout_seconds,
                 step_id=step_id,
                 tool_call_id=tool_call_id,
+                agent_invocation_id=agent_invocation_id,
             )
             with self._cancellation_lock:
                 self._require_running(run_id)
@@ -322,12 +421,20 @@ class RuntimeExecutor:
         try:
             if not cancellation.is_set():
                 try:
-                    output = operation(arguments, cancellation)
+                    refusal = self._before_agent_execution(call, cancellation)
+                    output = refusal if refusal is not None else operation(arguments, cancellation)
+                except UnknownEffect as error:
+                    self._store.transition_tool_call(
+                        call.id, ToolCallStatus.INTERRUPTED, "tool.interrupted",
+                        result_summary=type(error).__name__,
+                        payload={"failure_kind": FailureKind.TERMINATION_UNKNOWN.value},
+                    )
+                    raise
                 except Exception as error:  # noqa: BLE001 - persist callable failures, not BaseException
                     output = str(error)
                     failure_kind = FailureKind.EXECUTION_ERROR
                 except BaseException as error:
-                    if policy.risk_level is RiskLevel.READ_ONLY:
+                    if policy.risk_level is RiskLevel.READ_ONLY and call.id not in self._agent_executions:
                         interruption_kind = FailureKind.CANCELLED
                         status, event = ToolCallStatus.CANCELLED, "tool.cancelled"
                     else:
@@ -356,9 +463,11 @@ class RuntimeExecutor:
         else:
             status, event = ToolCallStatus.SUCCEEDED, "tool.completed"
         output = output[:policy.output_limit]
+        output, agent_result = self._agent_result(call, output, failure_kind)
         call = self._store.transition_tool_call(
             call.id, status, event, result_summary=output,
             payload={"failure_kind": failure_kind.value if failure_kind else None},
+            agent_result=agent_result,
         )
         return RuntimeResult(call, output, failure_kind)
 
@@ -386,7 +495,8 @@ class RuntimeExecutor:
         source = result.call
         policy = self._policies.resolve(source.tool_name)
         return (
-            source.status in {ToolCallStatus.FAILED, ToolCallStatus.TIMED_OUT}
+            source.id not in self._agent_executions
+            and source.status in {ToolCallStatus.FAILED, ToolCallStatus.TIMED_OUT}
             and source.risk_level is RiskLevel.READ_ONLY
             and source.idempotent
             and policy.auto_retry
@@ -426,8 +536,10 @@ class RuntimeExecutor:
                 result = ProcessResult(None, "", "", 0.0, FailureKind.CANCELLED, True)
             else:
                 try:
-                    result = self._process_runner.run(spec, cancellation)
-                except (KeyboardInterrupt, SystemExit) as error:
+                    refusal = self._before_agent_execution(call, cancellation)
+                    result = (ProcessResult(0, refusal, "", 0.0, None, True) if refusal is not None
+                              else self._process_runner.run(spec, cancellation))
+                except (KeyboardInterrupt, SystemExit, UnknownEffect) as error:
                     self._store.transition_tool_call(
                         call.id, ToolCallStatus.INTERRUPTED, "tool.interrupted",
                         result_summary=type(error).__name__,
@@ -463,6 +575,9 @@ class RuntimeExecutor:
         if result.stderr:
             output += "\n[stderr]\n" + result.stderr
         output = _bound_output(output, policy.output_limit)
+        agent_result = None
+        if status is not ToolCallStatus.INTERRUPTED:
+            output, agent_result = self._agent_result(call, output, failure_kind, result.exit_code)
         call = self._store.transition_tool_call(
             call.id,
             status,
@@ -472,5 +587,6 @@ class RuntimeExecutor:
                 "exit_code": result.exit_code,
                 "failure_kind": failure_kind.value if failure_kind else None,
             },
+            agent_result=agent_result,
         )
         return RuntimeResult(call, output, failure_kind, result.exit_code)

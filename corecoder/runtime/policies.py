@@ -1,7 +1,7 @@
 """Tool risk, execution, and failure classification policies."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 
 from corecoder.runtime.state import ExecutionKind, RiskLevel
@@ -41,7 +41,7 @@ class ToolPolicy:
 
     @property
     def requires_approval(self) -> bool:
-        return self.risk_level is not RiskLevel.READ_ONLY
+        return self.risk_level not in {RiskLevel.READ_ONLY, RiskLevel.INTERNAL_STATE}
 
 
 def requires_approval(policy: ToolPolicy) -> bool:
@@ -66,6 +66,11 @@ class ToolPolicyRegistry:
 
     def resolve(self, tool_name: str) -> ToolPolicy:
         return self._policies.get(tool_name, self._DEFAULT_POLICY)
+
+    def signature(self, tool_names) -> dict:
+        """Stable JSON policy description, including the conservative fallback."""
+        return {name: {**asdict(self.resolve(name)), "retryable_failures": sorted(self.resolve(name).retryable_failures)}
+                for name in sorted(set(tool_names))}
 
     @classmethod
     def with_builtin_defaults(cls) -> "ToolPolicyRegistry":
@@ -107,5 +112,7 @@ class ToolPolicyRegistry:
                 "write_file": mutating,
                 "edit_file": mutating,
                 "bash": bash,
+                "todo_write": ToolPolicy(RiskLevel.INTERNAL_STATE, ExecutionKind.IN_PROCESS,
+                                         30, 1, False, False, frozenset(), 15_000),
             }
         )
