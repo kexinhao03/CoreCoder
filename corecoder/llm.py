@@ -21,6 +21,7 @@ class ToolCall:
     id: str
     name: str
     arguments: dict
+    raw_arguments: str | None = None
 
 
 @dataclass
@@ -29,11 +30,14 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reasoning_content: str | None = None
 
     @property
     def message(self) -> dict:
         """Convert to OpenAI message format for appending to history."""
         msg: dict = {"role": "assistant", "content": self.content or None}
+        if self.reasoning_content is not None:
+            msg["reasoning_content"] = self.reasoning_content
         if self.tool_calls:
             msg["tool_calls"] = [
                 {
@@ -41,7 +45,7 @@ class LLMResponse:
                     "type": "function",
                     "function": {
                         "name": tc.name,
-                        "arguments": json.dumps(tc.arguments),
+                        "arguments": tc.raw_arguments if tc.raw_arguments is not None else json.dumps(tc.arguments),
                     },
                 }
                 for tc in self.tool_calls
@@ -136,6 +140,7 @@ class LLM:
             stream = self._call_with_retry(params)
 
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
         prompt_tok = 0
         completion_tok = 0
@@ -153,6 +158,8 @@ class LLM:
             if not getattr(chunk, "choices", None):
                 continue
             delta = chunk.choices[0].delta
+            if getattr(delta, "reasoning_content", None):
+                reasoning_parts.append(delta.reasoning_content)
 
             # accumulate text
             if getattr(delta, "content", None):
@@ -182,7 +189,7 @@ class LLM:
                 args = json.loads(raw["args"])
             except (json.JSONDecodeError, KeyError):
                 args = {}
-            parsed.append(ToolCall(id=raw["id"], name=raw["name"], arguments=args))
+            parsed.append(ToolCall(id=raw["id"], name=raw["name"], arguments=args, raw_arguments=raw["args"]))
 
         self.total_prompt_tokens += prompt_tok
         self.total_completion_tokens += completion_tok
@@ -192,6 +199,7 @@ class LLM:
             tool_calls=parsed,
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
+            reasoning_content="".join(reasoning_parts) if reasoning_parts else None,
         )
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
