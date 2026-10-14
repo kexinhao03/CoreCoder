@@ -138,12 +138,38 @@ class DurableAgentSession(AgentRuntimeSession):
 
     def _metadata(self, agent):
         import json
+        from urllib.parse import urlsplit, urlunsplit
 
+        from .llm import LiteLLM
+
+        def endpoint(value):
+            parts = urlsplit(str(value or ""))
+            return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1]))
+
+        credential_options = {
+            "api_key", "api_token", "azure_ad_token", "azure_ad_token_provider",
+            "aws_access_key_id", "aws_secret_access_key", "aws_session_token", "vertex_credentials",
+        }
+        credential_headers = {"authorization", "proxy-authorization", "api-key", "x-api-key", "x-goog-api-key", "cookie"}
+        options = {key: value for key, value in getattr(agent.llm, "extra", {}).items() if key not in credential_options}
+        if isinstance(options.get("extra_body"), dict):
+            options["extra_body"] = {key: value for key, value in options["extra_body"].items()
+                                     if key not in credential_options}
+        for header_option in ("extra_headers", "headers", "default_headers"):
+            if isinstance(options.get(header_option), dict):
+                options[header_option] = {key: value for key, value in options[header_option].items()
+                                          if key.lower() not in credential_headers}
+        for endpoint_option in ("base_url", "api_base", "azure_endpoint"):
+            if endpoint_option in options:
+                options[endpoint_option] = endpoint(options[endpoint_option])
         client = getattr(agent.llm, "client", None)
+        is_litellm = isinstance(agent.llm, LiteLLM)
+        base_url = (getattr(agent.llm, "base_url", None) or options.get("api_base")) if is_litellm else getattr(client, "base_url", "")
         metadata = {
             "schema_version": 1, "model": agent.llm.model,
-            "base_url": str(getattr(client, "base_url", "")),
-            "model_options": getattr(agent.llm, "extra", {}),
+            "backend": "litellm" if is_litellm else "openai-compatible",
+            "base_url": endpoint(base_url),
+            "model_options": options,
             "system": agent._system, "tools": agent._tool_schemas(),
             "policies": self.policies.signature([tool.name for tool in agent.tools] + ["__unknown__"]),
             "max_context_tokens": agent.context.max_tokens,
@@ -302,7 +328,10 @@ class DurableAgentSession(AgentRuntimeSession):
             request = {"messages": agent._full_messages(), "tools": agent._tool_schemas()}
             sequence = self.journal.begin_turn(self.run_id, request)
             rounds += 1
-            response = agent.llm.chat(**request, on_token=on_token)
+            from .llm import durable_model_request
+
+            with durable_model_request():
+                response = agent.llm.chat(**request, on_token=on_token)
             self.journal.record_response(self.run_id, sequence, response.message)
             self._sync(agent)
             # A final response commits its turn before returning to the caller.
@@ -321,6 +350,8 @@ class DurableAgentSession(AgentRuntimeSession):
 
         self._require_owner(agent)
         self._check_pending(self.journal.load(self.run_id))
+        if self.before_inference is not None:
+            self.before_inference(agent)
         name = invocation["tool_name"]
         raw = invocation["arguments"]
         try:

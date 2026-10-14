@@ -11,9 +11,23 @@ single unified interface. Set CORECODER_PROVIDER=litellm.
 
 import json
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from openai import APIConnectionError, APIError, APITimeoutError, BadRequestError, OpenAI, RateLimitError
+
+_DURABLE_REQUEST = ContextVar("corecoder_durable_model_request", default=False)
+
+
+@contextmanager
+def durable_model_request():
+    """One journaled inference; ambiguous failures require caller authorization."""
+    token = _DURABLE_REQUEST.set(True)
+    try:
+        yield
+    finally:
+        _DURABLE_REQUEST.reset(token)
 
 
 @dataclass
@@ -203,7 +217,9 @@ class LLM:
         )
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
-        """Retry on transient errors with exponential backoff."""
+        """Retry on transient errors outside an explicit durable boundary."""
+        if _DURABLE_REQUEST.get():
+            return self.client.with_options(max_retries=0).chat.completions.create(**params)
         for attempt in range(max_retries):
             try:
                 return self.client.chat.completions.create(**params)
@@ -258,6 +274,17 @@ class LiteLLM(LLM):
             params["api_key"] = self.api_key
         if self.base_url:
             params["api_base"] = self.base_url
+        if _DURABLE_REQUEST.get():
+            # Sync LiteLLM may fall back from num_retries=0 to its global setting;
+            # a zero RetryPolicy also overrides that without global mutation.
+            params.update(num_retries=0, max_retries=0,
+                          retry_policy={
+                              "BadRequestErrorRetries": 0, "AuthenticationErrorRetries": 0,
+                              "TimeoutErrorRetries": 0, "RateLimitErrorRetries": 0,
+                              "ContentPolicyViolationErrorRetries": 0, "InternalServerErrorRetries": 0,
+                              "ServiceUnavailableErrorRetries": 0, "NotFoundErrorRetries": 0, "DefaultRetries": 0,
+                          }, fallbacks=None, context_window_fallback_dict={})
+            return litellm.completion(**params)
 
         for attempt in range(max_retries):
             try:

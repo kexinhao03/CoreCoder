@@ -551,3 +551,232 @@ def test_finish_requires_ownership_and_explicit_cancel_handles_unknown(tmp_path)
     finally:
         session.close()
         other.close()
+
+
+@pytest.mark.parametrize("failure", ["connection", "timeout", "server"])
+def test_real_llm_durable_request_does_not_retry_uncertainty(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+
+    try:
+        import httpx2 as httpx
+    except ImportError:
+        import httpx
+    from openai import APIConnectionError, APITimeoutError, InternalServerError
+
+    from corecoder.llm import LLM
+
+    request = httpx.Request("POST", "https://model.invalid/v1/chat/completions")
+    errors = {
+        "connection": APIConnectionError(request=request),
+        "timeout": APITimeoutError(request=request),
+        "server": InternalServerError("unavailable", response=httpx.Response(503, request=request), body=None),
+    }
+    attempts = []
+    retry_options = []
+
+    def create(**params):
+        attempts.append(params)
+        if len(attempts) == 1:
+            raise errors[failure]
+        return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="authorized"))], usage=None)])
+
+    class Client:
+        base_url = "https://model.invalid/v1"
+        max_retries = 2
+        chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+        def with_options(self, **options):
+            retry_options.append(options)
+            return self
+
+    llm = object.__new__(LLM)
+    llm.model, llm.client, llm.extra = "counting-model", Client(), {}
+    llm.total_prompt_tokens = llm.total_completion_tokens = 0
+    monkeypatch.setattr("corecoder.llm.time.sleep", lambda seconds: None)
+    agent = Agent(llm, tools=[])
+    session = open_session(tmp_path, Fernet.generate_key())
+    session.attach(agent)
+    try:
+        with pytest.raises(type(errors[failure])):
+            session.chat(agent, "go")
+        assert len(attempts) == 1
+        assert retry_options == [{"max_retries": 0}]
+        assert session.journal.load(session.run_id)["phase"] == "llm_inflight"
+        with pytest.raises(ValueError):
+            session.resume(agent)
+        assert len(attempts) == 1
+        session.journal.authorize_llm_retry(session.run_id, evidence={"operator": "explicit authorization"})
+        assert session.resume(agent) == "authorized"
+        assert len(attempts) == 2
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("backend", ["openai", "litellm"])
+@pytest.mark.parametrize("mutation", ["restore", "live"])
+def test_supported_backend_endpoint_changes_block_before_model(tmp_path, backend, mutation):
+    from types import SimpleNamespace
+
+    from corecoder.llm import LiteLLM
+
+    class CountingLiteLLM(LiteLLM):
+        def __init__(self, endpoint):
+            super().__init__("counting-model", api_key="synthetic-credential", base_url=endpoint)
+            self.requests = []
+
+        def chat(self, messages, tools=None, on_token=None):
+            self.requests.append(messages)
+            return LLMResponse(content="should not run")
+
+    def make_agent(endpoint):
+        llm = CountingLiteLLM(endpoint) if backend == "litellm" else CountingLLM([LLMResponse(content="should not run")])
+        if backend == "openai":
+            llm.client = SimpleNamespace(base_url=endpoint)
+        return Agent(llm, tools=[])
+
+    key = Fernet.generate_key()
+    session = open_session(tmp_path, key)
+    agent = make_agent("https://original.invalid/v1")
+    session.attach(agent)
+    if mutation == "restore":
+        session.close()
+        session = open_session(tmp_path, key, session.run_id)
+        agent = make_agent("https://changed.invalid/v1")
+        with pytest.raises(ValueError, match="metadata|signature"):
+            session.attach(agent)
+    else:
+        if backend == "litellm":
+            agent.llm.base_url = "https://changed.invalid/v1"
+        else:
+            agent.llm.client.base_url = "https://changed.invalid/v1"
+        try:
+            with pytest.raises(ValueError, match="metadata|signature"):
+                session.chat(agent, "go")
+        finally:
+            session.close()
+    assert agent.llm.requests == []
+
+
+def test_backend_identity_is_part_of_reasoning_signature(tmp_path):
+    from types import SimpleNamespace
+
+    from corecoder.llm import LiteLLM
+
+    key = Fernet.generate_key()
+    session = open_session(tmp_path, key)
+    agent = Agent(CountingLLM([]), tools=[])
+    agent.llm.client = SimpleNamespace(base_url="")
+    session.attach(agent)
+    session.close()
+    changed = Agent(LiteLLM("counting-model"), tools=[])
+    session = open_session(tmp_path, key, session.run_id)
+    with pytest.raises(ValueError, match="metadata|signature"):
+        session.attach(changed)
+
+
+@pytest.mark.parametrize("backend", ["openai", "litellm"])
+def test_transport_credentials_are_excluded_and_rotation_preserves_identity(tmp_path, backend):
+    import json
+    from types import SimpleNamespace
+
+    from corecoder.llm import LiteLLM
+
+    endpoint = "https://synthetic-user:synthetic-password@model.invalid/v1"
+    extra = {"temperature": 0.2, "extra_headers": {"Authorization": "Bearer synthetic-key", "X-Route": "region-a"}}
+    if backend == "litellm":
+        llm = LiteLLM("counting-model", api_key="synthetic-provider-key", base_url=endpoint, **extra)
+    else:
+        llm = CountingLLM([])
+        llm.client = SimpleNamespace(base_url=endpoint)
+        llm.extra = extra
+    agent = Agent(llm, tools=[])
+    session = open_session(tmp_path, Fernet.generate_key())
+    session.attach(agent)
+    try:
+        metadata = session.journal.load(session.run_id)["state"]["metadata"]
+        serialized = json.dumps(metadata)
+        assert all(value not in serialized for value in ["synthetic-user", "synthetic-password", "synthetic-key", "synthetic-provider-key"])
+        assert metadata["model_options"]["temperature"] == 0.2
+        assert metadata["model_options"]["extra_headers"] == {"X-Route": "region-a"}
+        assert metadata["base_url"] == "https://model.invalid/v1"
+        llm.extra["extra_headers"]["Authorization"] = "Bearer rotated-synthetic-key"
+        rotated = "https://other-user:rotated-password@model.invalid/v1"
+        if backend == "litellm":
+            llm.api_key, llm.base_url = "rotated-provider-key", rotated
+        else:
+            llm.client.base_url = rotated
+        assert session.ready(agent)
+        assert all(value not in json.dumps(session.export()) for value in ["synthetic-key", "synthetic-password", "rotated-password"])
+        llm.extra["temperature"] = 0.7
+        with pytest.raises(ValueError, match="metadata|signature"):
+            session.ready(agent)
+    finally:
+        session.close()
+
+
+def test_supported_body_credentials_are_omitted_but_inference_options_remain(tmp_path):
+    import json
+
+    from corecoder.llm import LiteLLM
+
+    llm = LiteLLM("counting-model", api_key="synthetic-provider-key", base_url="https://model.invalid/v1",
+                  azure_ad_token="synthetic-ad-token", aws_secret_access_key="synthetic-cloud-key",
+                  extra_body={"azure_ad_token": "synthetic-body-token", "thinking": {"type": "enabled"}})
+    llm.chat = lambda **kwargs: LLMResponse(content="done")
+    agent = Agent(llm, tools=[])
+    session = open_session(tmp_path, Fernet.generate_key())
+    session.attach(agent)
+    try:
+        session.chat(agent, "go")
+        state = session.journal.load(session.run_id)["state"]
+        metadata = state["metadata"]
+        assert metadata["model_options"] == {"extra_body": {"thinking": {"type": "enabled"}}}
+        with session.store._connect() as connection:
+            turn = connection.execute("SELECT * FROM agent_turns WHERE run_id = ?", (session.run_id,)).fetchone()
+        request = session.journal.cipher.open(session.journal._turn_identity(turn, "request"), turn["request_ciphertext"])
+        assert all(secret not in json.dumps({"state": state, "request": request, "export": session.export()})
+                   for secret in ["synthetic-provider-key", "synthetic-ad-token", "synthetic-cloud-key", "synthetic-body-token"])
+    finally:
+        session.close()
+
+
+def test_cached_earlier_post_operation_gates_later_queued_tools(tmp_path):
+    key, tool = Fernet.generate_key(), EffectTool()
+    model = CountingLLM([LLMResponse(tool_calls=[ToolCall("first", tool.name, {"value": "first"}),
+                                                ToolCall("second", tool.name, {"value": "second"})])])
+    agent = Agent(model, tools=[tool])
+    session = open_session(tmp_path, key)
+    session.attach(agent)
+    session.after_result = lambda *args: (_ for _ in ()).throw(ConnectionError("post operation needs recovery"))
+    with pytest.raises(ConnectionError):
+        session.chat(agent, "go")
+    session.close()
+    session = open_session(tmp_path, key, session.run_id)
+    restored = Agent(CountingLLM([LLMResponse(content="done")]), tools=[tool])
+    session.attach(restored)
+    session.before_inference = lambda agent: (_ for _ in ()).throw(ValueError("pending linked post operation"))
+    try:
+        with pytest.raises(ValueError, match="pending linked"):
+            session.resume(restored)
+        assert tool.effects == ["first"]
+        assert restored.llm.requests == []
+        assert session.journal.list_invocations(session.run_id)[1]["state"] == "queued"
+    finally:
+        session.close()
+
+
+def test_supported_provider_credential_headers_are_removed_case_insensitively(tmp_path):
+    from types import SimpleNamespace
+
+    llm = CountingLLM([])
+    llm.client = SimpleNamespace(base_url="https://model.invalid/v1")
+    llm.extra = {"extra_headers": {"X-Goog-Api-Key": "synthetic-google-credential", "X-Api-Key": "synthetic-header-credential",
+                                    "Proxy-Authorization": "synthetic-proxy-credential", "X-Route": "region-a"}}
+    agent = Agent(llm, tools=[])
+    session = open_session(tmp_path, Fernet.generate_key())
+    session.attach(agent)
+    try:
+        metadata = session.journal.load(session.run_id)["state"]["metadata"]
+        assert metadata["model_options"]["extra_headers"] == {"X-Route": "region-a"}
+    finally:
+        session.close()
