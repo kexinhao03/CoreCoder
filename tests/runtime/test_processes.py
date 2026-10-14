@@ -15,6 +15,20 @@ from corecoder.runtime.policies import FailureKind
 from corecoder.runtime.processes import ManagedProcessRunner, ProcessResult, ProcessSpec
 
 
+def test_windows_shell_source_is_not_crt_escaped():
+    source = r'"C:\Program Files\Python\python.exe" -c "print(\"quoted text\")"'
+    args = (r"C:\Windows\system32\cmd.exe", "/c", source)
+    prepared = processes._popen_args(args, windows=True)
+    assert isinstance(prepared, str)
+    assert prepared.endswith('"' + source + '"')
+    assert source in prepared
+    assert "/d /s /c" in prepared
+    # Ordinary executable arguments still use the usual subprocess argv path.
+    ordinary = ("python.exe", "-c", 'print("quoted text")')
+    assert processes._popen_args(ordinary, windows=True) == ordinary
+    assert processes._popen_args(args, windows=False) == args
+
+
 def make_spec(tmp_path, *argv: str, output_limit: int = 1000) -> ProcessSpec:
     return ProcessSpec(
         argv=argv,

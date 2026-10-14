@@ -96,7 +96,7 @@ class ManagedProcessRunner:
         environment["RELIAGENT_PROCESS_TOKEN"] = process_token
         try:
             process = subprocess.Popen(
-                spec.argv,
+                _popen_args(spec.argv, windows=os.name == "nt"),
                 cwd=spec.cwd,
                 env=environment,
                 stdout=subprocess.PIPE,
@@ -201,6 +201,13 @@ class ManagedProcessRunner:
                 termination_confirmed=termination_confirmed,
             ),
         )
+
+
+def _popen_args(argv: tuple[str, ...], *, windows: bool) -> tuple[str, ...] | str:
+    if windows and len(argv) == 3 and argv[1].lower() == "/c":
+        # cmd parses shell source itself; CRT argv quoting corrupts nested quotes.
+        return f'{subprocess.list2cmdline([argv[0]])} /d /s /c "{argv[2]}"'
+    return argv
 
 
 def _termination_confirmed(process: subprocess.Popen) -> bool:
