@@ -726,6 +726,13 @@ class SQLiteStore:
                 raise ValueError(
                     "interrupted ML success requires the dedicated reconciliation transaction"
                 )
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_invocations'"
+            ).fetchone()
+            if table and connection.execute(
+                "SELECT 1 FROM agent_invocations WHERE current_attempt_id = ?", (call_id,)
+            ).fetchone():
+                raise ValueError("agent interruption requires journal reconciliation")
             self._resolve_recovery(connection, run, call, status, resolution, timestamp)
             _, updated = self._recovery_records(connection, call_id)
             connection.commit()
@@ -805,6 +812,20 @@ class SQLiteStore:
             connection.close()
         return retry
 
+    def _agent_attempt_transition(self, connection, call, status, token, timestamp):
+        journal = getattr(self, "_agent_journal", None)
+        if journal is not None:
+            return journal._transition_attempt(connection, call, status, token, timestamp)
+        if token is not None:
+            raise ValueError("agent result requires an authenticated journal")
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_invocations'"
+        ).fetchone()
+        if table and connection.execute(
+            "SELECT 1 FROM agent_invocations WHERE current_attempt_id = ?", (call["id"],)
+        ).fetchone():
+            raise ValueError("agent attempt requires an authenticated journal")
+
     def create_tool_call(
         self,
         *,
@@ -819,6 +840,7 @@ class SQLiteStore:
         retry_of: str | None = None,
         step_id: str | None = None,
         tool_call_id: str | None = None,
+        agent_invocation_id: str | None = None,
     ) -> ToolCallRecord:
         resolved_id = tool_call_id or uuid.uuid4().hex
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -844,6 +866,16 @@ class SQLiteStore:
                     raise KeyError(f"step not found: {step_id}")
                 if step_row["run_id"] != run_id:
                     raise ValueError("step belongs to another run")
+
+            if agent_invocation_id is not None:
+                if step_id is not None or retry_of is not None:
+                    raise ValueError("agent invocation owns its Step and retry lineage")
+                journal = getattr(self, "_agent_journal", None)
+                if journal is None:
+                    raise ValueError("agent invocation requires an authenticated journal")
+                step_id = journal._bind_attempt(
+                    connection, agent_invocation_id, run_id, tool_name, arguments, resolved_id, timestamp
+                )
 
             attempt = 1
             if retry_of is not None:
@@ -904,6 +936,7 @@ class SQLiteStore:
                 updated_at=timestamp,
                 started_at=None,
                 ended_at=None,
+                step_id=step_id,
             )
             connection.execute(
                 """
@@ -937,6 +970,11 @@ class SQLiteStore:
                     step_id,
                 ),
             )
+            if agent_invocation_id is not None:
+                connection.execute(
+                    "UPDATE agent_invocations SET state = 'bound', current_attempt_id = ? WHERE id = ?",
+                    (call.id, agent_invocation_id),
+                )
             sequence = connection.execute(
                 """
                 SELECT COALESCE(MAX(sequence), 0) + 1
@@ -1062,6 +1100,9 @@ class SQLiteStore:
                     tool_call_id,
                 ),
             )
+            self._agent_attempt_transition(
+                connection, call_row, ToolCallStatus.WAITING_APPROVAL, None, timestamp
+            )
             sequence = self._next_event_sequence(
                 connection, call_row["run_id"]
             )
@@ -1090,6 +1131,8 @@ class SQLiteStore:
         self,
         approval_id: str,
         decision: ApprovalDecision,
+        *,
+        agent_result: bytes | None = None,
     ) -> ApprovalRecord:
         timestamp = datetime.now(timezone.utc).isoformat()
         connection = self._connect()
@@ -1169,6 +1212,12 @@ class SQLiteStore:
                         call_row["id"],
                     ),
                 )
+            if decision is ApprovalDecision.DENY:
+                self._agent_attempt_transition(
+                    connection, call_row, ToolCallStatus.CANCELLED, agent_result, timestamp
+                )
+            elif agent_result is not None:
+                raise ValueError("approved attempts cannot have a terminal result")
             sequence = self._next_event_sequence(
                 connection, call_row["run_id"]
             )
@@ -1495,6 +1544,8 @@ class SQLiteStore:
         event_type: str,
         result_summary: str | None = None,
         payload: dict | None = None,
+        *,
+        agent_result: bytes | None = None,
     ) -> ToolCallRecord:
         timestamp = datetime.now(timezone.utc).isoformat()
         connection = self._connect()
@@ -1517,13 +1568,17 @@ class SQLiteStore:
             ensure_tool_call_transition(
                 ToolCallStatus(row["status"]), to_status
             )
+            durable_attempt = self._agent_attempt_transition(connection, row, to_status, agent_result, timestamp)
             started_at = row["started_at"]
             if to_status is ToolCallStatus.RUNNING and started_at is None:
                 started_at = timestamp
             ended_at = row["ended_at"]
             if to_status in _ENDED_TOOL_CALL_STATUSES:
                 ended_at = timestamp
-            summary = redact_text(result_summary)[:2000] if result_summary else None
+            summary = (
+                "[encrypted tool result]" if durable_attempt and agent_result is not None
+                else redact_text(result_summary)[:2000] if result_summary else None
+            )
             event_payload = dict(payload or {})
             event_payload["tool_call_id"] = tool_call_id
             connection.execute(
