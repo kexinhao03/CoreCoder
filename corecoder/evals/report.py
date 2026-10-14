@@ -80,11 +80,35 @@ def _summary(results: Sequence[EvaluationResult]) -> dict:
 def _portable_paths(value):
     if isinstance(value, str):
         root = str(_REPOSITORY_ROOT)
-        for separator in {os.sep, "/", "\\"}:
-            value = value.replace(f"{root}{separator}", "")
-        escaped_root = root.replace("\\", "\\\\")
-        value = value.replace(f"{escaped_root}\\\\", "")
-        return value.replace(root, ".").replace(escaped_root, ".")
+        root_variants = {root, root.replace("\\", "/"), root.replace("/", "\\")}
+        candidates = set()
+        prefixes = set()
+        for root_variant in root_variants:
+            escaped_root = root_variant.replace("\\", "\\\\")
+            candidates.update({root_variant, escaped_root})
+            for candidate in {root_variant, escaped_root}:
+                separators = {os.sep, "/", "\\", "\\\\"}
+                for separator in separators:
+                    prefixes.add(f"{candidate}{separator}")
+        for prefix in sorted(prefixes, key=len, reverse=True):
+            search_start = 0
+            while (index := value.find(prefix, search_start)) >= 0:
+                relative_start = index + len(prefix)
+                quote = value[index - 1] if index and value[index - 1] in "\"'" else None
+                relative_end = relative_start
+                terminators = " \t\r\n;,'\"()[]{}<>"
+                while relative_end < len(value):
+                    character = value[relative_end]
+                    if character == quote or (quote is None and character in terminators):
+                        break
+                    relative_end += 1
+                relative = value[relative_start:relative_end]
+                relative = relative.replace("\\\\", "/").replace("\\", "/")
+                value = value[:index] + relative + value[relative_end:]
+                search_start = index + len(relative)
+        for candidate in sorted(candidates, key=len, reverse=True):
+            value = value.replace(candidate, ".")
+        return value
     if isinstance(value, dict):
         return {key: _portable_paths(item) for key, item in value.items()}
     if isinstance(value, list):

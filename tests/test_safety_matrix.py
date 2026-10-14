@@ -6,6 +6,8 @@ model is told. These combinations are the part of CoreCoder that must never
 be wrong, because it is where readers copy the pattern from.
 """
 
+import subprocess
+import sys
 from typing import ClassVar
 
 import pytest
@@ -26,7 +28,8 @@ def _write_call(call_id, path):
 
 
 def _blocking_hook(reason="hook says no"):
-    return {"matcher": "*", "command": f"echo {reason} >&2; exit 2"}
+    code = f"import sys; sys.stderr.write({reason!r} + '\\n'); raise SystemExit(2)"
+    return {"matcher": "*", "command": subprocess.list2cmdline([sys.executable, "-c", code])}
 
 
 class _BoomTool(Tool):

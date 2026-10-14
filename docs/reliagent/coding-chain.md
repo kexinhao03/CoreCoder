@@ -76,7 +76,8 @@ ToolCalls retain their actual failure/success status.
 
 Verified on macOS / Python 3.12 in the ReliAgent development worktree:
 
-- `python -m pytest tests -q`: **557 passed, 1 skipped** (71.81 seconds).
+- `python -m pytest tests -q`: **563 passed, 1 skipped** (75.18 seconds), after incorporating the existing
+  cross-platform fixes from `main` (`104fbb1`).
   The skip is the opt-in live-model integration test requiring credentials.
 - The new coding-chain file contains **23** collected cases, all included in
   the successful full run.
