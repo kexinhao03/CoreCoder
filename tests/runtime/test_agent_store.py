@@ -450,3 +450,187 @@ def test_reconciliation_event_failure_rolls_back_all_facts(journal, decision):
     ) == before
     assert journal.store.list_reconciliation_evidence(call.id) == []
     assert journal.store.list_approvals("run") == []
+
+
+def durable_read(journal):
+    sequence = journal.begin_turn("run", {"messages": []})
+    message = response(arguments='{"file_path":"document.txt"}')
+    message["tool_calls"][0]["function"]["name"] = "read_file"
+    invocation = journal.record_response("run", sequence, message)[0]
+    call = journal.store.create_tool_call(
+        run_id="run",
+        tool_name="read_file",
+        arguments={"file_path": "document.txt"},
+        risk_level=RiskLevel.READ_ONLY,
+        execution_kind=ExecutionKind.IN_PROCESS,
+        idempotent=True,
+        idempotency_key="read",
+        timeout_seconds=30,
+        agent_invocation_id=invocation["id"],
+    )
+    journal.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, "tool.started")
+    return invocation, call
+
+
+def retry_registry():
+    from corecoder.runtime.policies import FailureKind, ToolPolicy, ToolPolicyRegistry
+
+    return ToolPolicyRegistry(
+        {
+            "read_file": ToolPolicy(
+                risk_level=RiskLevel.READ_ONLY,
+                execution_kind=ExecutionKind.IN_PROCESS,
+                timeout_seconds=30,
+                max_attempts=4,
+                idempotent=True,
+                auto_retry=True,
+                retryable_failures=frozenset({FailureKind.EXECUTION_ERROR}),
+                output_limit=1000,
+            )
+        }
+    )
+
+
+def test_legacy_recovery_retry_cannot_escape_blocked_journal(journal):
+    _invocation, call = durable_read(journal)
+    journal.store.transition_tool_call(
+        call.id, ToolCallStatus.INTERRUPTED, "tool.interrupted", payload={"reason": "process_lost"}
+    )
+    store = SQLiteStore(journal.store.path)
+    before = (store.get_run("run"), store.list_tool_calls("run"), store.list_events("run"))
+    with pytest.raises(ValueError, match="journal"):
+        store.resume_recovery_retry(store.get_run("run"), store.get_tool_call(call.id), retry_registry())
+    assert (store.get_run("run"), store.list_tool_calls("run"), store.list_events("run")) == before
+    assert journal.load("run")["phase"] == "blocked"
+    assert journal.list_invocations("run")[0]["attempt_id"] == call.id
+
+
+@pytest.mark.parametrize("api", ["schedule", "create"])
+@pytest.mark.parametrize("source_attempt", ["current", "old"])
+def test_legacy_retry_apis_reject_entire_reconciled_journal_lineage(journal, api, source_attempt):
+    from corecoder.runtime.approvals import ApprovalDecision
+    from corecoder.runtime.policies import FailureKind
+
+    invocation, original = durable_read(journal)
+    journal.store.transition_tool_call(original.id, ToolCallStatus.INTERRUPTED, "tool.interrupted")
+    reconciled = journal.reconcile(invocation["id"], "confirmed_not_executed", evidence={"reference": "operator"})
+    current_id = reconciled["attempt_id"]
+    approval = journal.store.get_approval_for_tool_call(current_id)
+    journal.store.resolve_approval(approval.id, ApprovalDecision.ALLOW_ONCE)
+    journal.store.transition_tool_call(current_id, ToolCallStatus.RUNNING, "tool.started")
+    journal.store.transition_tool_call(
+        current_id, ToolCallStatus.FAILED, "tool.failed", agent_result=journal.result_token(invocation["id"], "known failure")
+    )
+    store = SQLiteStore(journal.store.path)
+    source = store.get_tool_call(current_id if source_attempt == "current" else original.id)
+    before = (store.list_tool_calls("run"), store.list_steps("run"), store.list_events("run"))
+    with pytest.raises(ValueError, match="journal"):
+        if api == "schedule":
+            store.schedule_retry(source, FailureKind.EXECUTION_ERROR, retry_registry())
+        else:
+            store.create_tool_call(
+                run_id="run",
+                tool_name=source.tool_name,
+                arguments=source.arguments,
+                risk_level=source.risk_level,
+                execution_kind=source.execution_kind,
+                idempotent=source.idempotent,
+                idempotency_key=source.idempotency_key,
+                timeout_seconds=source.timeout_seconds,
+                retry_of=source.id,
+            )
+    assert (store.list_tool_calls("run"), store.list_steps("run"), store.list_events("run")) == before
+
+
+@pytest.mark.parametrize("authenticated_journal", [False, True])
+def test_preexisting_unbound_retry_branch_cannot_start(journal, authenticated_journal):
+    invocation, original = durable_read(journal)
+    journal.store.transition_tool_call(original.id, ToolCallStatus.INTERRUPTED, "tool.interrupted")
+    journal.reconcile(invocation["id"], "confirmed_not_executed", evidence={"reference": "operator"})
+    # Simulate a persisted unbound sibling created by an older legacy retry path.
+    with sqlite3.connect(journal.store.path) as conn:
+        conn.execute(
+            """INSERT INTO tool_calls (
+            id, run_id, retry_of, tool_name, arguments_json, arguments_replayable, risk_level,
+            execution_kind, idempotent, idempotency_key, status, attempt, timeout_seconds,
+            created_at, updated_at, step_id
+        ) SELECT 'escaped-retry', run_id, id, tool_name, arguments_json, arguments_replayable, risk_level,
+            execution_kind, idempotent, idempotency_key, 'created', attempt + 1, timeout_seconds,
+            created_at, updated_at, step_id FROM tool_calls WHERE id = ?""",
+            (original.id,),
+        )
+    store = journal.store if authenticated_journal else SQLiteStore(journal.store.path)
+    with pytest.raises(ValueError, match="journal"):
+        store.transition_tool_call("escaped-retry", ToolCallStatus.RUNNING, "tool.started")
+    assert store.get_tool_call("escaped-retry").status is ToolCallStatus.CREATED
+
+
+@pytest.mark.parametrize("operation", ["load", "list", "start"])
+@pytest.mark.parametrize("mutation", ["corrupt_request", "corrupt_response", "missing_response", "swap_request", "swap_response"])
+def test_turn_authentication_blocks_restore_and_tool_start(journal, operation, mutation):
+    invocation = queue(journal)
+    call = bind(journal, invocation)
+    journal.store.create_run(
+        goal="donor", workflow="agent", workspace=journal.store.path.parent, model="test", prompt_version="v1", run_id="donor"
+    )
+    journal.create("donor", {"messages": []})
+    donor_sequence = journal.begin_turn("donor", {})
+    journal.record_response("donor", donor_sequence, response())
+    with sqlite3.connect(journal.store.path) as conn:
+        column = "request_ciphertext" if mutation.endswith("request") else "response_ciphertext"
+        if mutation.startswith("swap"):
+            replacement = conn.execute(f"SELECT {column} FROM agent_turns WHERE run_id = 'donor'").fetchone()[0]
+        else:
+            replacement = None if mutation == "missing_response" else b"corrupt"
+        conn.execute(f"UPDATE agent_turns SET {column} = ? WHERE run_id = 'run'", (replacement,))
+    restored = AgentJournal(SQLiteStore(journal.store.path), journal.cipher)
+    before = (restored.store.get_tool_call(call.id), restored.store.list_steps("run"), restored.store.list_events("run"))
+    with pytest.raises(ValueError):
+        if operation == "load":
+            restored.load("run")
+        elif operation == "list":
+            restored.list_invocations("run")
+        else:
+            restored.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, "tool.started")
+    assert (restored.store.get_tool_call(call.id), restored.store.list_steps("run"), restored.store.list_events("run")) == before
+
+
+@pytest.mark.parametrize("column", ["request_ciphertext", "response_ciphertext"])
+def test_corrupt_completed_turn_blocks_next_inference(journal, column):
+    sequence = journal.begin_turn("run", {})
+    journal.record_response("run", sequence, {"role": "assistant", "content": "done"})
+    journal.complete_turn("run", journal.load("run")["state"])
+    with sqlite3.connect(journal.store.path) as conn:
+        conn.execute(f"UPDATE agent_turns SET {column} = ? WHERE run_id = 'run'", (b"corrupt",))
+    with pytest.raises(ValueError):
+        journal.begin_turn("run", {"messages": []})
+    with sqlite3.connect(journal.store.path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM agent_turns WHERE run_id = 'run'").fetchone()[0] == 1
+
+
+def test_legacy_workflow_retry_cannot_reserve_journal_attempt(journal):
+    from corecoder.runtime.approvals import ApprovalDecision
+
+    invocation = queue(journal)
+    with sqlite3.connect(journal.store.path) as conn:
+        conn.execute("UPDATE runs SET workflow = 'ml_experiment' WHERE id = 'run'")
+    call = journal.store.create_tool_call(
+        run_id="run",
+        tool_name="write_file",
+        arguments={"content": "private arguments"},
+        risk_level=RiskLevel.EXTERNAL_EFFECT,
+        execution_kind=ExecutionKind.IN_PROCESS,
+        idempotent=False,
+        idempotency_key=None,
+        timeout_seconds=30,
+        agent_invocation_id=invocation["id"],
+    )
+    approval = journal.store.request_approval(call.id, arguments_summary="safe", workspace=".", risk_reason="external")
+    journal.store.resolve_approval(approval.id, ApprovalDecision.ALLOW_ONCE)
+    journal.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, "tool.started")
+    journal.store.transition_tool_call(call.id, ToolCallStatus.INTERRUPTED, "tool.interrupted")
+    store = SQLiteStore(journal.store.path)
+    before = (store.get_run("run"), store.list_tool_calls("run"), store.list_events("run"))
+    with pytest.raises(ValueError, match="journal"):
+        store.approve_workflow_retry(call.id, {"reference": "legacy decision"})
+    assert (store.get_run("run"), store.list_tool_calls("run"), store.list_events("run")) == before

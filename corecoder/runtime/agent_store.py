@@ -92,6 +92,18 @@ class AgentJournal:
     def _turn_identity(row, record: str) -> dict:
         return {"record": record, "run_id": row["run_id"], "turn_sequence": row["sequence"], "request_id": row["request_id"]}
 
+    def _authenticate_turn(self, connection, run_id: str, sequence: int):
+        turn = connection.execute("SELECT * FROM agent_turns WHERE run_id = ? AND sequence = ?", (run_id, sequence)).fetchone()
+        if turn is None:
+            raise ValueError("agent turn checkpoint not found")
+        self.cipher.open(self._turn_identity(turn, "request"), turn["request_ciphertext"])
+        requires_response = turn["status"] in {"responded", "complete"}
+        if requires_response and turn["response_ciphertext"] is None:
+            raise ValueError("agent turn is missing its committed response")
+        if turn["response_ciphertext"] is not None:
+            self.cipher.open(self._turn_identity(turn, "response"), turn["response_ciphertext"])
+        return turn
+
     def _load(self, connection, run_id: str):
         row = connection.execute("SELECT * FROM agent_sessions WHERE run_id = ?", (run_id,)).fetchone()
         if row is None:
@@ -99,6 +111,10 @@ class AgentJournal:
         if row["schema_version"] != 1:
             raise ValueError("unsupported checkpoint schema")
         state = self.cipher.open(self._context_identity(run_id, row["revision"]), row["context_ciphertext"])
+        if row["turn_sequence"]:
+            turn = self._authenticate_turn(connection, run_id, row["turn_sequence"])
+            if row["phase"] in {"dispatching", "complete"} and turn["response_ciphertext"] is None:
+                raise ValueError("checkpoint is missing its committed response")
         return row, state
 
     def _write_state(self, connection, row, state: dict, phase: str) -> None:
@@ -258,6 +274,10 @@ class AgentJournal:
                 params.append(turn_sequence)
             rows = connection.execute(query + " ORDER BY turn_sequence, ordinal", params).fetchall()
             results = []
+            for sequence in {row["turn_sequence"] for row in rows}:
+                turn = self._authenticate_turn(connection, run_id, sequence)
+                if turn["response_ciphertext"] is None:
+                    raise ValueError("invocation is missing its committed response")
             for row in rows:
                 arguments = self.cipher.open(self._invocation_identity(row, "arguments"), row["arguments_ciphertext"])
                 result = None
@@ -399,11 +419,13 @@ class AgentJournal:
         return step_id
 
     def _transition_attempt(self, connection, call, status, token, timestamp):
-        invocation = connection.execute("SELECT * FROM agent_invocations WHERE current_attempt_id = ?", (call["id"],)).fetchone()
+        invocation = self.store._agent_invocation_for_attempt(connection, call["id"])
         if invocation is None:
             if token is not None:
                 raise ValueError("result token requires an agent invocation")
             return False
+        if invocation["current_attempt_id"] != call["id"]:
+            raise ValueError("agent attempt is not bound to its journal invocation")
         checkpoint, _ = self._load(connection, invocation["run_id"])
         self.cipher.open(self._invocation_identity(invocation, "arguments"), invocation["arguments_ciphertext"])
         if status in {ToolCallStatus.RUNNING, ToolCallStatus.WAITING_APPROVAL} and checkpoint["phase"] != "dispatching":

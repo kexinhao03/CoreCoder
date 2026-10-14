@@ -632,6 +632,35 @@ class SQLiteStore:
             event_type="recovery.resolved", payload=payload, created_at=timestamp,
         )
 
+    @staticmethod
+    def _agent_invocation_for_attempt(connection: sqlite3.Connection, call_id: str):
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_invocations'"
+        ).fetchone()
+        if table is None:
+            return None
+        # Ownership survives reconciliation moving the binding to a later attempt,
+        # and also covers an unbound retry branch persisted by an older API.
+        return connection.execute(
+            """WITH RECURSIVE ancestors(id, retry_of) AS (
+                SELECT id, retry_of FROM tool_calls WHERE id = ?
+                UNION
+                SELECT parent.id, parent.retry_of FROM tool_calls parent
+                JOIN ancestors ON parent.id = ancestors.retry_of
+            ), family(id) AS (
+                SELECT id FROM ancestors
+                UNION
+                SELECT child.id FROM tool_calls child JOIN family ON child.retry_of = family.id
+            )
+            SELECT invocation.* FROM agent_invocations invocation
+            JOIN family ON invocation.current_attempt_id = family.id LIMIT 1""",
+            (call_id,),
+        ).fetchone()
+
+    def _require_legacy_attempt(self, connection: sqlite3.Connection, call_id: str) -> None:
+        if self._agent_invocation_for_attempt(connection, call_id) is not None:
+            raise ValueError("agent attempt requires journal-aware recovery")
+
     def resume_recovery_retry(
         self, expected_run: RunRecord, expected_call: ToolCallRecord, registry: ToolPolicyRegistry,
     ) -> ToolCallRecord:
@@ -644,6 +673,7 @@ class SQLiteStore:
             run, call = self._recovery_records(connection, expected_call.id)
             if run != expected_run or call != expected_call:
                 raise ValueError("stale or mismatched recovery candidate")
+            self._require_legacy_attempt(connection, call.id)
             policy = registry.resolve(call.tool_name)
             if not (
                 run.status is RunStatus.RECOVERABLE
@@ -726,13 +756,7 @@ class SQLiteStore:
                 raise ValueError(
                     "interrupted ML success requires the dedicated reconciliation transaction"
                 )
-            table = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_invocations'"
-            ).fetchone()
-            if table and connection.execute(
-                "SELECT 1 FROM agent_invocations WHERE current_attempt_id = ?", (call_id,)
-            ).fetchone():
-                raise ValueError("agent interruption requires journal reconciliation")
+            self._require_legacy_attempt(connection, call.id)
             self._resolve_recovery(connection, run, call, status, resolution, timestamp)
             _, updated = self._recovery_records(connection, call_id)
             connection.commit()
@@ -754,6 +778,7 @@ class SQLiteStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             run, call = self._recovery_records(connection, expected_call.id)
+            self._require_legacy_attempt(connection, call.id)
             policy = registry.resolve(call.tool_name)
             if not (
                 call == expected_call and run.status is RunStatus.RUNNING
@@ -818,12 +843,7 @@ class SQLiteStore:
             return journal._transition_attempt(connection, call, status, token, timestamp)
         if token is not None:
             raise ValueError("agent result requires an authenticated journal")
-        table = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_invocations'"
-        ).fetchone()
-        if table and connection.execute(
-            "SELECT 1 FROM agent_invocations WHERE current_attempt_id = ?", (call["id"],)
-        ).fetchone():
+        if self._agent_invocation_for_attempt(connection, call["id"]) is not None:
             raise ValueError("agent attempt requires an authenticated journal")
 
     def create_tool_call(
@@ -884,6 +904,7 @@ class SQLiteStore:
                 ).fetchone()
                 if source is None:
                     raise KeyError(f"retry source not found: {retry_of}")
+                self._require_legacy_attempt(connection, source["id"])
                 if source["run_id"] != run_id:
                     raise ValueError("retry_of belongs to another run")
                 if ToolCallStatus(source["status"]) not in {
@@ -2093,6 +2114,7 @@ class SQLiteStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             run, call = self._recovery_records(connection, call_id)
+            self._require_legacy_attempt(connection, call.id)
             if (
                 run.workflow != "ml_experiment"
                 or run.status is not RunStatus.RECOVERABLE
