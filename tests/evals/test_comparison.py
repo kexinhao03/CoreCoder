@@ -193,3 +193,90 @@ def test_runtime_kill_during_child_keeps_fault_evidence_and_safely_blocks(tmp_pa
     assert row['outcome'] == 'human_required'
     assert row['effect_count'] == 0
     assert row['unsafe_replay_count'] == 0
+
+
+def test_fault_deadline_is_invalid_and_excluded_from_factorial_pairs(tmp_path):
+    mod = comparison()
+    rows = [mod.run_trial(trial(config, 'during_tool_execution', 'runtime_kill', case='fault'),
+                          tmp_path, deadline_seconds=0.001) for config in 'ABCD']
+    assert all(row['outcome'] == 'deadline' and not row['fault_triggered'] for row in rows)
+    assert all(row['valid'] is False for row in rows)
+    summary = report().summarize(rows)
+    assert summary['completion']['denominator'] == 4
+    assert summary['invalid'] == 4
+    assert all(value['n'] == 0 for value in report().paired_differences(rows).values())
+
+
+@pytest.mark.parametrize('completed', [False, True])
+@pytest.mark.parametrize('trigger', [False, None])
+def test_unconfirmed_fault_is_never_paired_even_in_legacy_valid_rows(completed, trigger):
+    rows = [{**trial(config, 'during_tool_execution', 'runtime_kill', case='fault'),
+             'valid': True, 'fault_triggered': trigger, 'task_completed': completed} for config in 'ABCD']
+    assert all(value['n'] == 0 for value in report().paired_differences(rows).values())
+
+
+@pytest.mark.parametrize('point', ['during_tool_execution', 'never_reached'])
+def test_child_delayed_registration_exits_after_supervisor_deadline(tmp_path, monkeypatch, point):
+    import os
+    import time
+
+    mod = comparison()
+    wrapper = tmp_path / 'delayed_registration.py'
+    wrapper.write_text('''import json, os, sys, time
+from corecoder.evals import comparison_worker as worker
+original_append = worker.append_json
+def delayed_append(path, value):
+    if path.name == 'children.jsonl' and value.get('tool') == 'effect':
+        (path.parent / 'registration-blocked.json').write_text(json.dumps({'pid': os.getpid()}))
+        while not (path.parent / 'release-registration').exists():
+            time.sleep(0.005)
+    original_append(path, value)
+worker.append_json = delayed_append
+raise SystemExit(worker.main())
+''')
+    actual_phase = mod._phase
+
+    def delayed_phase(path, assigned, phase, deadline):
+        if phase == 'initial':
+            manifest = mod.read_json(path / 'manifest.json')
+            manifest['steps'][1]['argv'][1] = str(wrapper)
+            mod.atomic_json(path / 'manifest.json', manifest)
+        return actual_phase(path, assigned, phase, deadline)
+
+    monkeypatch.setattr(mod, '_phase', delayed_phase)
+    assigned = trial('A', point, 'runtime_kill', case='fault')
+    directory = tmp_path / assigned['trial_id']
+    child_pid = None
+    try:
+        row = mod.run_trial(assigned, tmp_path, deadline_seconds=2)
+        blocked = mod.read_json(directory / 'registration-blocked.json')
+        assert blocked is not None, row  # actual child launched, registration deliberately withheld
+        child_pid = blocked['pid']
+        assert not any(item.get('tool') == 'effect' for item in mod.read_lines(directory / 'children.jsonl'))
+        (directory / 'release-registration').touch()
+        until = time.monotonic() + 2
+        while time.monotonic() < until:
+            exits = mod.read_lines(directory / 'child-exits.jsonl') or []
+            if any(item['pid'] == child_pid for item in exits):
+                break
+            time.sleep(0.01)
+        assert any(item['pid'] == child_pid for item in exits), 'late-registering child remained alive after supervisor returned'
+        assert not (directory / 'handshake.json').exists()
+        assert mod.observe_trial(directory)['effect_count'] == 0
+        aborts = mod.read_lines(directory / 'child-aborts.jsonl')
+        assert any(item['pid'] == child_pid and item['parent_lost'] and item['deadline_expired'] for item in aborts)
+        # Verify actual process disappearance, not only an exit-intent record.
+        while time.monotonic() < until:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                child_pid = None
+                break
+            time.sleep(0.01)
+        assert child_pid is None, 'late-registering child did not actually exit'
+    finally:
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass

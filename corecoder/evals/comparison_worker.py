@@ -23,14 +23,29 @@ class InjectedFault(RuntimeError):
     pass
 
 
+def check_tool_owner(path: Path, manifest: dict):
+    expected_parent = os.environ.get('RELIAGENT_EVAL_WORKER_PID')
+    parent_lost = expected_parent is None or os.getppid() != int(expected_parent)
+    deadline_expired = time.monotonic() >= manifest['deadline_monotonic']
+    if parent_lost or deadline_expired:
+        append_json(path / 'child-aborts.jsonl', {'pid': os.getpid(), 'parent_lost': parent_lost,
+                                              'deadline_expired': deadline_expired})
+        raise SystemExit(125)
+
+
 def boundary(path: Path, point: str, *, role='runtime', enabled=True):
-    trial = read_json(path / 'manifest.json')['trial']
+    manifest = read_json(path / 'manifest.json')
+    trial = manifest['trial']
     if not enabled or trial['fault_point'] != point or trial['fault_type'] == 'none':
         return
+    if role == 'child':
+        check_tool_owner(path, manifest)
     atomic_json(path / 'handshake.json', {'boundary': point, 'pid': os.getpid(), 'role': role,
                                         'monotonic': time.monotonic()})
     # Supervisor either kills this process or explicitly authorizes a raised exception.
     while not (path / 'fault-response.json').exists():
+        if role == 'child':
+            check_tool_owner(path, manifest)
         time.sleep(0.005)
     atomic_json(path / 'exception-raised.json', {'boundary': point, 'pid': os.getpid(), 'role': role})
     raise InjectedFault(f'injected exception at {point}')
@@ -139,6 +154,7 @@ def _receipt_valid(path, trial):
 
 
 def execute(path: Path, phase: str):
+    os.environ['RELIAGENT_EVAL_WORKER_PID'] = str(os.getpid())
     manifest = read_json(path / 'manifest.json')
     trial = manifest['trial']
     store = EvaluationStore(path, phase == 'initial')
@@ -189,7 +205,10 @@ def execute(path: Path, phase: str):
 def tool(path: Path, name: str):
     manifest = read_json(path / 'manifest.json')
     trial = manifest['trial']
+    check_tool_owner(path, manifest)
     append_json(path / 'children.jsonl', {'pid': os.getpid(), 'tool': name, 'token': os.environ.get('RELIAGENT_PROCESS_TOKEN')})
+    # Registration itself may have been delayed beyond supervisor cleanup.
+    check_tool_owner(path, manifest)
     if name == 'prepare':
         attempts = read_lines(path / 'preparation.jsonl') or []
         append_json(path / 'preparation.jsonl', {'attempt': len(attempts) + 1})
@@ -199,6 +218,7 @@ def tool(path: Path, name: str):
             return 7
     elif name == 'effect':
         boundary(path, 'during_tool_execution', role='child')
+        check_tool_owner(path, manifest)
         append_json(path / 'effects.jsonl', {'task_id': trial['trial_id'], 'operation': 'effect'})
         if trial['workload'] == 'receipt':
             atomic_json(path / 'receipt.json', {'task_id': trial['trial_id'], 'operation': 'effect', 'completed': True})
@@ -207,6 +227,7 @@ def tool(path: Path, name: str):
         if records != [{'task_id': trial['trial_id'], 'operation': 'effect'}]:
             print('independent effect validation failed', file=sys.stderr)
             return 8
+        check_tool_owner(path, manifest)
         atomic_json(path / 'final-artifact.json', {'task_id': trial['trial_id'], 'verified_effects': 1})
     print(json.dumps({'tool': name, 'result': 'completed'}))
     return 0

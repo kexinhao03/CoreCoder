@@ -211,7 +211,7 @@ def run_trial(trial: dict, output: Path, deadline_seconds: float = 15) -> dict:
                               if trial['fault_point'] == 'after_result_before_next_inference' else trial['fault_point']),
            'initial_exit_code': None, 'child_exit_code': None, 'warmup': False}
     atomic_json(path / 'manifest.json', {'schema': SCHEMA, 'trial': trial, 'configuration': CONFIGS[trial['config_id']],
-                                      'deadline_seconds': deadline_seconds, 'source': source_fingerprint(),
+                                      'deadline_seconds': deadline_seconds, 'deadline_monotonic': deadline, 'source': source_fingerprint(),
                                       'task': ['safe preparation', 'one external effect', 'independent final verification'],
                                       'steps': [{'tool_name': name, 'argv': [sys.executable,
                                           str(ROOT / 'corecoder/evals/comparison_worker.py'), str(path), 'tool', name]}
@@ -230,6 +230,8 @@ def run_trial(trial: dict, output: Path, deadline_seconds: float = 15) -> dict:
         row['child_exit_code'] = worker.get('child_exit_code')
         row['runtime_status'] = worker.get('runtime_status')
         row['error'] = worker.get('error')
+        if trial['fault_type'] != 'none' and not row['fault_triggered']:
+            row.update(valid=False, fault_missed_reason='target boundary/action not observed')
         if initial['timed_out']:
             row.update(outcome='deadline', error='trial deadline exceeded', recovery_censored=True)
         elif trial['fault_type'] != 'none' and not row['fault_triggered']:

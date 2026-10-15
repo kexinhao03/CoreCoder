@@ -69,6 +69,8 @@ def paired_differences(rows: list[dict]) -> dict:
     for row in rows:
         if row.get('config_id') not in {'A', 'B', 'C', 'D'} or not row.get('valid', True) or row.get('task_completed') is None:
             continue
+        if row.get('fault_type', 'none') != 'none' and row.get('fault_triggered') is not True:
+            continue
         key = tuple(row.get(field) for field in ('layer', 'workload', 'case_id', 'fault_point', 'fault_type', 'repetition'))
         matches[key][row['config_id']] = int(row['task_completed'])
     weights = {'B-A': {'B': 1, 'A': -1}, 'D-C': {'D': 1, 'C': -1}, 'C-A': {'C': 1, 'A': -1},
