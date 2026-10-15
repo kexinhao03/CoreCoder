@@ -83,6 +83,23 @@ def paired_differences(rows: list[dict]) -> dict:
     return output
 
 
+def live_paired_differences(rows: list[dict]) -> dict:
+    """Match only common live cases and eligible same-repetition observations."""
+    matches = defaultdict(dict)
+    for row in rows:
+        if (row.get('config_id') not in {'D_agent', 'E'} or row.get('case_id') == 'after_result'
+                or not row.get('valid', True) or row.get('task_completed') is None):
+            continue
+        if row.get('fault_type', 'none') != 'none' and not row.get('fault_triggered'):
+            continue
+        matches[(row['case_id'], row['repetition'])][row['config_id']] = int(row['task_completed'])
+    cases = defaultdict(list)
+    for (case, _), pair in matches.items():
+        if pair.keys() >= {'D_agent', 'E'}:
+            cases[case].append(pair['D_agent'] - pair['E'])
+    return {case: {'n': len(values), 'mean': statistics.mean(values)} for case, values in sorted(cases.items())}
+
+
 def _rate(value):
     interval = value['wilson95']
     bounds = 'unavailable' if interval is None else f"[{interval[0]:.3f}, {interval[1]:.3f}]"
@@ -104,15 +121,23 @@ def render_report(bundle: dict) -> str:
                for row in bundle.get('schedule', []) if row['trial_id'] not in retained_ids]
     rows = [*rows, *pending]
     summary = summarize(rows)
+    live = bundle.get('layer') == 'live_agent'
     lines = ['# Reliability comparison', '',
              (f"Schema: `{bundle['schema']}`. {'SMOKE RUN — ' if bundle.get('smoke', bundle.get('repetitions', 10) < 10) else ''}"
              f"{len(rows)} assigned trials; {len(pending)} pending; {summary['invalid']} invalid/missed/pending; "
              f"{sum(bool(row.get('warmup')) for row in bundle['trials'])} warmups excluded."), '',
-             ('A=(retry off, recovery off), B=(on, off), C=(off, on), D=(on, on). '
+             (('D_agent is the current production durable Agent (auto_tool_retry=false; retry is not exercised). '
+               'E is pristine upstream CoreCoder. This layer compares durable recovery and combined implementation/provider cost. '
+               f"Provider: {bundle.get('provider', 'real')}; {bundle.get('requested_trials', len(rows))} requested; "
+               f"{len(rows)} eligible assigned; {len(bundle.get('skipped_matrix', []))} skipped.") if live else
+              ('A=(retry off, recovery off), B=(on, off), C=(off, on), D=(on, on). '
              'A is the same production Runtime with flags disabled. D_agent and E, if present, are separate live-Agent comparators '
-             'and is excluded from factorial estimates.'), '',
-             ('Mechanism requests are deterministic. The final boundary is before **fixed-task continuation**, '
-             'with no inference in this layer. SIGKILL, child termination, and raised exceptions are distinct treatments.'), '',
+             'and is excluded from factorial estimates.')),  '',
+             (('Real provider trials let the LLM select calls. Offline provider=fixture trials are deterministic tests '
+               'and are not model reliability evidence. SIGKILL follows a durable boundary handshake after a real fsynced '
+               'effect or production result commit. E has no durable result boundary and is never restarted.') if live else
+              ('Mechanism requests are deterministic. The final boundary is before **fixed-task continuation**, '
+             'with no inference in this layer. SIGKILL, child termination, and raised exceptions are distinct treatments.')),  '',
              ('Task completion requires a correct external final artifact and exactly one matching independently fsynced effect. '
              'The primary denominator is all assigned repetitions, including invalid/missed faults and pending observations. '
              'Hazard denominators include observed side-effect trials; unknown observations are excluded and disclosed. '
@@ -125,9 +150,12 @@ def render_report(bundle: dict) -> str:
              f"| Duplicate side-effect trials (>1) | {_rate(summary['duplicates'])} |",
              f"| Unsafe-replay trials (total starts={summary['unsafe_replay_total']}) | {_rate(summary['unsafe_replay'])} |",
              f"| Additional human reconciliation | {_rate(summary['human_intervention'])} |", '',
-             ('Routine consent is logged separately. Disabled recovery leaves incomplete work without automatically '
+             (('Routine consent is logged separately. D_agent blocks unknown effects for explicit human reconciliation; '
+               'completed calls are reused by their durable invocation identity. No human resolutions are simulated. '
+               'E receives no evaluator restart or replay.') if live else
+              ('Routine consent is logged separately. Disabled recovery leaves incomplete work without automatically '
              'requesting human reconciliation. Queryable receipts can be reconciled through the production recovery API; '
-             'opaque uncertain effects stop for human reconciliation. No human resolutions are simulated.'), '',
+             'opaque uncertain effects stop for human reconciliation. No human resolutions are simulated.')),  '',
              '## Latency (seconds)', '',
              f"- All end-to-end: {_duration(summary['elapsed'])}",
              f"- Restart launch → automatic completion: {_duration(summary['recovery_completion'])}",
@@ -154,6 +182,7 @@ def render_report(bundle: dict) -> str:
         if any(item.get('recovery_seconds') is not None for item in items):
             lines.append(f"| {' / '.join(key)} | {_duration(metrics['recovery_completion'])} | "
                          f"{_duration(metrics['recovery_safe_block'])} | {metrics['recovery_censored']} |")
+    factorial_start = len(lines)
     lines.extend(['', '## Paired factorial completion differences', '',
                   ('Descriptive risk differences, no significance claims. Retry: B−A and D−C; recovery: C−A and D−B; '
                   'interaction: D−B−C+A. E is never included. Small samples do not establish a general reliability rate.'), '',
@@ -171,6 +200,16 @@ def render_report(bundle: dict) -> str:
         values = paired_differences(items)
         lines.append('| ' + ' / '.join(key) + ' | ' + ' | '.join(
             f"n={value['n']}; difference={value['mean']}" for value in values.values()) + ' |')
+    if live:
+        del lines[factorial_start:]
+        lines.extend(['', '## Matched common live cases', '',
+            ('Descriptive D_agent−E completion differences match the same common case and repetition, excluding '
+             "invalid or missed faults. No pooled comparison of D_agent's four cases against E's three is made. "
+             'The durable-only postcommit boundary is excluded. Accepted-result crashes observe a durable result '
+             'in D_agent and a volatile accepted result in E; E is never described as persisted or restarted.'), '',
+            '| Common case | Matched n | Completion difference |', '|---|---|---|'])
+        for case, value in live_paired_differences(rows).items():
+            lines.append(f"| {case} | {value['n']} | {value['mean']} |")
     lines.extend(['', '## Normal-path overhead', '',
                   ('Timing includes process startup and fsynced measurement instrumentation. No warmups are run by default. '
                   'SQL statement counts come from live SQLite connection tracing; write transactions are recorded after commit. '
@@ -185,6 +224,17 @@ def render_report(bundle: dict) -> str:
         metrics = summarize(items)
         lines.append(f"| {' / '.join(key)} | {_duration(metrics['elapsed'])} | "
                      f"{_duration(metrics['sql_write_statements'])} | {_duration(metrics['sql_write_transactions'])} |")
+    if live:
+        lines.extend(['', ('Provider timing is measured around each completed llm.chat call. Non-model elapsed includes '
+            'startup, tools, Runtime and fsynced instrumentation; it is not a pure Runtime microbenchmark. '
+            'Interrupted model intervals are censored. D_agent−E timing includes provider variability.'), '',
+            '| Config | Completed model-call seconds | Non-model elapsed seconds | Censored model timing |',
+            '|---|---|---|---|'])
+        for config in sorted({row['config_id'] for row in rows}):
+            items = [row for row in rows if row['config_id'] == config and row['case_id'] == 'normal']
+            lines.append(f"| {config} | {_duration(durations(row.get('model_seconds') for row in items))} | "
+                f"{_duration(durations(row.get('non_model_seconds') for row in items))} | "
+                f"{sum(bool(row.get('model_timing_censored')) for row in items)} |")
     lines.extend(['', '## Failure / intervention evidence', ''])
     examples = [row for row in rows if not row.get('task_completed') or not row.get('valid', True) or row.get('human_intervention')]
     for row in examples[:24]:
