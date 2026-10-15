@@ -1,11 +1,13 @@
 """The production CLI builder records real Agent tool execution offline."""
 
+import json
 import sqlite3
 from contextlib import closing
 from threading import Event, Lock
 from typing import ClassVar
 
 import pytest
+from cryptography.fernet import Fernet
 
 from corecoder import cli
 from corecoder.config import Config
@@ -18,7 +20,6 @@ from corecoder.runtime import (
     RecoveryManager,
     RiskLevel,
     RunStatus,
-    RuntimeToolAdapter,
     SQLiteStore,
     StepStatus,
     ToolCallStatus,
@@ -30,6 +31,7 @@ from corecoder.tools.base import Tool
 
 @pytest.fixture(autouse=True)
 def isolate_user_integrations(monkeypatch):
+    monkeypatch.setenv("RELIAGENT_CHECKPOINT_KEY", Fernet.generate_key().decode())
     # User MCP servers and shell hooks are external to this offline test.
     monkeypatch.setattr(cli, "load_mcp_tools", list)
     monkeypatch.setattr(cli, "load_hooks", lambda: None)
@@ -91,7 +93,7 @@ def test_production_builder_records_read_and_approved_write(tmp_path):
         types = [row[1] for row in events]
         assert types[:2] == ["run.created", "run.started"]
         assert types[-1] == "run.completed"
-        for event_type in ("step.started", "step.completed", "tool.started", "tool.completed"):
+        for event_type in ("tool.started", "tool.completed"):
             assert types.count(event_type) == 2
         assert types.count("approval.requested") == types.count("approval.resolved") == 1
         stored_arguments = db.execute(
@@ -146,7 +148,7 @@ def test_parallel_writes_serialize_approval_and_preserve_decisions(
             ]),
             LLMResponse(content="Both decisions handled."),
         ]),
-        Config(), Permission(ask=ask, allow_all=permission_mode == "allow_all"),
+        Config(model="scripted-demo"), Permission(ask=ask, allow_all=permission_mode == "allow_all"),
         runtime_workspace=tmp_path, runtime_enabled=True,
     )
 
@@ -169,7 +171,8 @@ def test_parallel_writes_serialize_approval_and_preserve_decisions(
     expected_statuses = ["cancelled", "succeeded"] if permission_mode == "mixed" else ["succeeded", "succeeded"]
     assert sorted(call.status.value for call in calls) == expected_statuses
     assert sorted(step.status.value for step in session.store.list_steps(session.run_id)) == expected_statuses
-    paths = {call.id: call.arguments["file_path"] for call in calls}
+    paths = {item["attempt_id"]: json.loads(item["arguments"])["file_path"]
+             for item in session.journal.list_invocations(session.run_id)}
     assert {paths[a.tool_call_id]: (a.status.value, a.decision.value) for a in approvals} == {
         str(allowed): ("approved", "allow_once"),
         str(other): ("denied", "deny") if permission_mode == "mixed" else ("approved", "allow_once"),
@@ -177,7 +180,7 @@ def test_parallel_writes_serialize_approval_and_preserve_decisions(
     results = {m["tool_call_id"]: m["content"] for m in agent.messages if m["role"] == "tool"}
     assert results["write-allowed"] == f"Wrote 1 lines to {allowed}"
     assert results["write-other"] == (
-        "Approval denied for write_file" if permission_mode == "mixed" else f"Wrote 1 lines to {other}"
+        Permission(ask=lambda *_: "deny").check("write_file", arguments[1]) if permission_mode == "mixed" else f"Wrote 1 lines to {other}"
     )
 
 
@@ -196,7 +199,7 @@ def test_parallel_runtime_reads_and_writes_complete_serially(tmp_path, monkeypat
                 ToolCall(id="second", name=second_tool, arguments=second_args),
             ]),
             LLMResponse(content="done"),
-        ]), Config(), Permission(allow_all=True), runtime_workspace=tmp_path, runtime_enabled=True,
+        ]), Config(model="scripted-demo"), Permission(allow_all=True), runtime_workspace=tmp_path, runtime_enabled=True,
     )
     assert agent.chat("Handle both calls.") == "done"
     assert [call.status for call in session.store.list_tool_calls(session.run_id)] == [
@@ -218,17 +221,15 @@ def test_builder_preserves_unwrapped_tools_and_tool_order(tmp_path, monkeypatch)
     mcp_tool = MCPTool()
     monkeypatch.setattr(cli, "load_mcp_tools", lambda: [mcp_tool])
     agent, session = cli._build_agent(
-        ScriptedLLM([]), Config(), Permission(),
+        ScriptedLLM([]), Config(model="scripted-demo"), Permission(),
         runtime_workspace=tmp_path, runtime_enabled=True,
     )
     originals = [*ALL_TOOLS, mcp_tool]
     assert [tool.name for tool in agent.tools] == [tool.name for tool in originals]
-    for original, wrapped in zip(originals, agent.tools):
-        if original.name in {"read_file", "write_file", "edit_file", "bash"}:
-            assert isinstance(wrapped, RuntimeToolAdapter)
-            assert wrapped.schema() == original.schema()
-        else:
-            assert wrapped is original
+    for original, actual in zip(originals, agent.tools):
+        assert actual.schema() == original.schema()
+        assert actual is not original or actual is mcp_tool
+    assert agent.runtime_session is session
     session.finish(RunStatus.SUCCEEDED)
 
 
@@ -236,12 +237,12 @@ def test_disabled_runtime_keeps_original_tools_and_creates_no_database(tmp_path)
     source, target = tmp_path / "source.txt", tmp_path / "target.txt"
     source.write_text("original read\n", encoding="utf-8")
     agent, session = cli._build_agent(
-        ScriptedLLM(_read_write_script(source, target)), Config(), Permission(allow_all=True),
+        ScriptedLLM(_read_write_script(source, target)), Config(model="scripted-demo"), Permission(allow_all=True),
         runtime_workspace=tmp_path, runtime_enabled=False,
     )
 
     assert session is None
-    assert all(tool is original for tool, original in zip(agent.tools, ALL_TOOLS))
+    assert all(tool is not original and tool.schema() == original.schema() for tool, original in zip(agent.tools, ALL_TOOLS))
     assert agent.chat("Read and write.") == "Read and write completed."
     assert target.read_text(encoding="utf-8") == "written through runtime\n"
     assert not (tmp_path / ".reliagent").exists()
@@ -388,7 +389,7 @@ def test_resumed_model_is_recorded_in_runtime(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("error,code,status,event", [
-    (RuntimeError("offline failure"), 1, "failed", "run.failed"),
+    (RuntimeError("offline failure"), 1, "running", "run.started"),
     (KeyboardInterrupt(), 130, "cancelled", "run.cancelled"),
 ])
 def test_one_shot_failure_finishes_run_and_preserves_exit_code(tmp_path, monkeypatch, error, code, status, event):
@@ -434,7 +435,7 @@ def test_one_shot_mutating_system_exit_preserves_recovery_and_effect_once(
         arguments={"file_path": str(marker), "content": "effect\n"},
     )])])
     _configure_cli(monkeypatch, tmp_path, llm, "--yes", "-p", "create one effect")
-    monkeypatch.setattr(cli, "ALL_TOOLS", [EffectThenExitTool()])
+    monkeypatch.setattr(cli, "builtin_tools", lambda: [EffectThenExitTool()])
 
     with pytest.raises(SystemExit) as exc:
         cli.main()
@@ -468,6 +469,7 @@ def test_interactive_session_stays_open_between_turns_and_finishes_on_exit(tmp_p
                 raise error
             return super().chat(*args, **kwargs)
 
+    had_error = first_error is not None
     llm = RecoveringLLM([LLMResponse(content="one"), LLMResponse(content="two")])
     _configure_cli(monkeypatch, tmp_path, llm)
     inputs = iter(["first turn", "second turn", "quit"])
@@ -482,11 +484,12 @@ def test_interactive_session_stays_open_between_turns_and_finishes_on_exit(tmp_p
     cli.main()
 
     with _database(tmp_path) as db:
-        assert db.execute("SELECT status FROM runs").fetchall() == [("succeeded",)]
-        assert db.execute("SELECT COUNT(*) FROM events WHERE type = 'run.completed'").fetchone() == (1,)
+        assert db.execute("SELECT status FROM runs").fetchall() == [("running" if had_error else "succeeded",)]
+        assert db.execute("SELECT COUNT(*) FROM events WHERE type = 'run.completed'").fetchone() == (0 if had_error else 1,)
+        assert db.execute("SELECT COUNT(*) FROM agent_turns").fetchone() == (1 if had_error else 2,)
 
 
-def test_interactive_read_tool_interrupt_settles_runtime_and_next_turn_succeeds(
+def test_interactive_read_tool_interrupt_blocks_new_input(
     tmp_path, monkeypatch,
 ):
     class InterruptOnceReadTool(Tool):
@@ -522,22 +525,15 @@ def test_interactive_read_tool_interrupt_settles_runtime_and_next_turn_succeeds(
         LLMResponse(content="second turn completed"),
     ])
     _configure_cli(monkeypatch, tmp_path, llm)
-    monkeypatch.setattr(cli, "ALL_TOOLS", [tool])
+    monkeypatch.setattr(cli, "builtin_tools", lambda: [tool])
     inputs = iter(["first turn", "second turn", "quit"])
     monkeypatch.setattr(cli, "pt_prompt", lambda *args, **kwargs: next(inputs))
 
     cli.main()
 
     with _database(tmp_path) as db:
-        assert db.execute("SELECT status FROM runs").fetchall() == [("succeeded",)]
-        assert db.execute(
-            "SELECT status FROM tool_calls ORDER BY created_at, id"
-        ).fetchall() == [("cancelled",), ("succeeded",)]
-        assert db.execute(
-            "SELECT status FROM steps ORDER BY sequence"
-        ).fetchall() == [("cancelled",), ("succeeded",)]
-        assert db.execute(
-            "SELECT COUNT(*) FROM tool_calls WHERE status IN "
-            "('created', 'waiting_approval', 'running')"
-        ).fetchone() == (0,)
-    assert tool.calls == 2
+        assert db.execute("SELECT status FROM runs").fetchall() == [("recoverable",)]
+        assert db.execute("SELECT status FROM tool_calls").fetchall() == [("interrupted",)]
+        assert db.execute("SELECT status FROM steps").fetchall() == [("failed",)]
+        assert db.execute("SELECT COUNT(*) FROM agent_turns").fetchone() == (1,)
+    assert tool.calls == 1

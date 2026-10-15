@@ -531,6 +531,7 @@ class RuntimeExecutor:
                 timeout_seconds=call.timeout_seconds,
                 output_limit=policy.output_limit,
                 termination_grace_seconds=1.0,
+                stdin=arguments.get("stdin"),
             )
             if cancellation.is_set():
                 result = ProcessResult(None, "", "", 0.0, FailureKind.CANCELLED, True)

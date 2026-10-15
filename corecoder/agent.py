@@ -16,7 +16,7 @@ from .context import ContextManager
 from .llm import LLM
 from .permissions import Permission
 from .prompt import PLAN_MODE_PROMPT, system_prompt
-from .tools import ALL_TOOLS
+from .tools import builtin_tools
 from .tools.agent import AgentTool
 from .tools.base import Tool
 from .tools.todo import TodoWriteTool
@@ -31,9 +31,11 @@ class Agent:
         max_rounds: int = 50,
         permission=None,
         hooks=None,
+        runtime_session=None,
     ):
+        self.runtime_session = runtime_session
         self.llm = llm
-        self.tools = tools if tools is not None else ALL_TOOLS
+        self.tools = tools if tools is not None else builtin_tools()
         self.permission = permission
         self.hooks = hooks
         self._tool_by_name = {t.name: t for t in self.tools}
@@ -49,6 +51,10 @@ class Agent:
                 t._parent_agent = self
 
         self._todo = next((t for t in self.tools if isinstance(t, TodoWriteTool)), None)
+        if runtime_session is not None:
+            from .durable_operations import DurableOperations
+            self.durable_operations = DurableOperations(runtime_session, self)
+            runtime_session.attach(self)
 
     def _full_messages(self) -> list[dict]:
         system = self._system
@@ -69,6 +75,8 @@ class Agent:
 
     def chat(self, user_input: str, on_token=None, on_tool=None) -> str:
         """Process one user message. May involve multiple LLM/tool rounds."""
+        if self.runtime_session is not None:
+            return self.runtime_session.chat(self, user_input, on_token, on_tool)
         self.messages.append({"role": "user", "content": user_input})
         self.context.maybe_compress(self.messages, self.llm)
 
@@ -221,4 +229,29 @@ class Agent:
 
     def reset(self):
         """Clear conversation history."""
+        if self.runtime_session is not None:
+            return self.runtime_session.reset(self)
         self.messages.clear()
+
+    def resume(self, on_token=None, on_tool=None):
+        """Continue persisted work without adding a user message."""
+        if self.runtime_session is None:
+            raise ValueError("resume requires a durable Run")
+        self.runtime_session._require_owner(self)
+        self.durable_operations.recover_children()
+        return self.runtime_session.resume(self, on_token, on_tool)
+
+    def undo(self):
+        if self.runtime_session is not None:
+            return self.durable_operations.undo()
+        from .checkpoints import undo
+        return undo()
+
+    def compact(self):
+        session = self.runtime_session
+        if session is not None:
+            session.ready(self)
+        compressed = self.context.maybe_compress(self.messages, None if session else self.llm)
+        if session is not None:
+            session.journal.save_state(session.run_id, session._state(self))
+        return compressed

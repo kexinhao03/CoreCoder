@@ -28,8 +28,11 @@ class ProcessSpec:
     output_limit: int
     termination_grace_seconds: float
     environment: dict[str, str] | None = None
+    stdin: bytes | None = None
 
     def __post_init__(self) -> None:
+        if self.stdin is not None and (not isinstance(self.stdin, bytes) or len(self.stdin) > 1_048_576):
+            raise ValueError("stdin must be bytes bounded to 1 MiB")
         if not self.argv:
             raise ValueError("argv must not be empty")
         if self.timeout_seconds <= 0:
@@ -93,12 +96,14 @@ class ManagedProcessRunner:
             json.dumps(spec.argv, separators=(",", ":")).encode()
         ).hexdigest()
         environment = dict(os.environ if spec.environment is None else spec.environment)
+        environment.pop("RELIAGENT_CHECKPOINT_KEY", None)
         environment["RELIAGENT_PROCESS_TOKEN"] = process_token
         try:
             process = subprocess.Popen(
                 _popen_args(spec.argv, windows=os.name == "nt"),
                 cwd=spec.cwd,
                 env=environment,
+                stdin=subprocess.PIPE if spec.stdin is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
@@ -123,6 +128,7 @@ class ManagedProcessRunner:
 
         failure_kind = None
         termination_confirmed = True
+        pending_input = spec.stdin
         try:
             while True:
                 remaining = spec.timeout_seconds - (monotonic() - started_at)
@@ -155,7 +161,7 @@ class ManagedProcessRunner:
                     break
 
                 try:
-                    stdout_bytes, stderr_bytes = process.communicate(timeout=min(0.05, remaining))
+                    stdout_bytes, stderr_bytes = process.communicate(input=pending_input, timeout=min(0.05, remaining))
                     if _termination_confirmed(process):
                         break
                     # EOF and parent exit do not prove redirected descendants have stopped.
@@ -163,6 +169,8 @@ class ManagedProcessRunner:
                 except subprocess.TimeoutExpired:
                     # communicate retains cumulative bytes; retrying must not append them.
                     pass
+                finally:
+                    pending_input = None
 
         except BaseException:
             # An interrupted caller must not leave its command running.

@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 
 from corecoder import cli
 from corecoder.config import Config
@@ -19,6 +20,11 @@ from corecoder.llm import LLMResponse, ToolCall
 from corecoder.permissions import Permission
 from corecoder.runtime import RecoveryKind, RecoveryManager, RunStatus, SQLiteStore, ToolCallStatus, ToolPolicyRegistry, processes
 from corecoder.tools.edit import EditFileTool
+
+
+@pytest.fixture(autouse=True)
+def checkpoint_key(monkeypatch):
+    monkeypatch.setenv("RELIAGENT_CHECKPOINT_KEY", Fernet.generate_key().decode())
 
 
 def command(*argv):
@@ -31,7 +37,7 @@ def build(monkeypatch, workspace, calls, permission=None):
     responses = [LLMResponse(tool_calls=batch) for batch in calls]
     responses.append(LLMResponse(content="done"))
     return cli._build_agent(
-        ScriptedLLM(responses), Config(), permission or Permission(allow_all=True),
+        ScriptedLLM(responses), Config(model="scripted-demo"), permission or Permission(allow_all=True),
         runtime_workspace=workspace, runtime_enabled=True,
     )
 
@@ -105,7 +111,7 @@ def test_edit_mismatch_is_persisted_failure(tmp_path, monkeypatch):
     agent.chat("Edit.")
     [call] = session.store.list_tool_calls(session.run_id)
     assert call.status is ToolCallStatus.FAILED
-    assert "old_string not found" in call.result_summary
+    assert "old_string not found" in session.journal.list_invocations(session.run_id)[0]["result"]
     assert source.read_text(encoding="utf-8") == "original"
 
 
@@ -142,12 +148,12 @@ def test_cancellation_stops_bash_and_refuses_next_edit(tmp_path, monkeypatch):
             time.sleep(0.01)
         assert ready.exists()
         session.executor.cancel_run(session.run_id)
-        assert work.result(timeout=5) == "done"
+        with pytest.raises((ValueError, RuntimeError), match="cancelled"):
+            work.result(timeout=5)
     [call] = session.store.list_tool_calls(session.run_id)
     assert call.status is ToolCallStatus.CANCELLED
-    adapter = next(t for t in agent.tools if t.name == "edit_file")
     with pytest.raises((ValueError, RuntimeError)):
-        adapter.execute(file_path=str(source), old_string="original", new_string="changed")
+        agent.chat("Edit after cancellation")
     assert source.read_text(encoding="utf-8") == "original"
     time.sleep(2)
     assert not late.exists()
@@ -199,8 +205,7 @@ def test_bash_tracks_directory_across_agent_turns(tmp_path, monkeypatch):
     agent.chat("Change directory then inspect.")
     results = [m["content"] for m in agent.messages if m["role"] == "tool"]
     assert str(subdir) in results[-1]
-    calls = session.store.list_tool_calls(session.run_id)
-    assert calls[-1].arguments["cwd"] == str(subdir)
+    assert session.journal.load(session.run_id)["state"]["cwd"] == str(subdir)
 
 
 @pytest.mark.parametrize("name", ["edit_file", "bash"])
@@ -236,7 +241,7 @@ if name == "bash":
     args = {"command": shell_command}
 agent, session = cli._build_agent(
     ScriptedLLM([LLMResponse(tool_calls=[ToolCall(id="effect", name=name, arguments=args)])]),
-    Config(), Permission(allow_all=True), runtime_workspace=workspace, runtime_enabled=True,
+    Config(model="scripted-demo"), Permission(allow_all=True), runtime_workspace=workspace, runtime_enabled=True,
 )
 agent.chat("Produce effect then crash before terminal persistence.")
 '''
@@ -289,7 +294,9 @@ def test_keyboard_interrupt_terminates_bash_and_preserves_unknown_result(tmp_pat
         assert call.status is ToolCallStatus.INTERRUPTED
         assert session.store.get_run(session.run_id).status is RunStatus.RECOVERABLE
         assert session.store.list_steps(session.run_id)[0].status.value == "failed"
-        assert agent.messages[-1]["content"] == "[interrupted]"
+        assert agent.messages[-1]["role"] == "assistant"
+        assert session.journal.list_invocations(session.run_id)[0]["result"] is None
+        assert session.journal.load(session.run_id)["phase"] == "blocked"
         time.sleep(1.1)
         assert not late.exists()
     finally:
@@ -308,7 +315,9 @@ def test_bash_invalid_timeout_never_starts_process(tmp_path, monkeypatch, timeou
     })]])
     agent.chat("Invalid timeout.")
     assert session.store.list_tool_calls(session.run_id) == []
-    assert session.store.list_steps(session.run_id)[0].status.value == "failed"
+    invocation = session.journal.list_invocations(session.run_id)[0]
+    assert invocation["state"] == "completed" and invocation["attempt_id"] is None
+    assert "invalid bash" in invocation["result"]
     assert not marker.exists()
 
 
@@ -359,7 +368,7 @@ def test_verbose_failed_test_preserves_stderr_tail(tmp_path, monkeypatch):
     agent.chat("Run verbose failing test.")
     [call] = session.store.list_tool_calls(session.run_id)
     assert call.status is ToolCallStatus.FAILED
-    assert "ASSERTION FAILED AT END" in call.result_summary
+    assert "ASSERTION FAILED AT END" in session.journal.list_invocations(session.run_id)[0]["result"]
     assert len(call.result_summary) <= 15000
     assert "ASSERTION FAILED AT END" in agent.messages[-2]["content"]
 
@@ -389,7 +398,7 @@ agent, session = cli._build_agent(
         ToolCall(id="edit", name="edit_file", arguments={
             "file_path": str(workspace / "source.txt"), "old_string": "original", "new_string": "changed",
         }),
-    ])]), Config(), Permission(allow_all=True), runtime_workspace=workspace, runtime_enabled=True,
+    ])]), Config(model="scripted-demo"), Permission(allow_all=True), runtime_workspace=workspace, runtime_enabled=True,
 )
 try:
     agent.chat("Run a batch.")

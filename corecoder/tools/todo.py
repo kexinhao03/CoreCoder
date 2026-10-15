@@ -7,9 +7,8 @@ system context on every round (see agent._full_messages), so the model
 always works from the current state instead of digging it out of old tool
 results.
 
-Sub-agents share the parent's list: they get the parent's tool instances
-minus `agent`.  Claude Code gives each sub-agent a list of its own; one
-shared list is what lets the whole pattern fit in a file this small.
+Durable sub-agents have fresh tool instances and independent task lists;
+each list is restored from its own Run checkpoint.
 """
 
 from typing import ClassVar

@@ -6,15 +6,32 @@ it did not exist). In-memory only: undo history dies with the process, and
 bash side effects are not tracked, only the two file-writing tools.
 """
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 # (path, prior bytes or None if the file did not exist)
 _stack: list[tuple[str, bytes | None]] = []
+_recorder = ContextVar("durable_checkpoint_recorder", default=None)
+
+
+@contextmanager
+def capture_with(recorder):
+    token = _recorder.set(recorder)
+    try:
+        yield
+    finally:
+        _recorder.reset(token)
 
 
 def record(path: Path) -> None:
     """Capture the pre-mutation state of path. Call right before writing."""
-    _stack.append((str(path), path.read_bytes() if path.exists() else None))
+    prior = path.read_bytes() if path.exists() else None
+    recorder = _recorder.get()
+    if recorder is not None:
+        recorder(path, prior)
+    else:
+        _stack.append((str(path), prior))
 
 
 def undo() -> str:

@@ -12,6 +12,7 @@ dies fails that one call as an ordinary error string; it never kills the loop.
 """
 
 import atexit
+import hashlib
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ import time
 from pathlib import Path
 
 from . import __version__
+from .runtime.executor import UnknownEffect
 from .tools.base import Tool
 
 log = logging.getLogger(__name__)
@@ -35,6 +37,10 @@ class MCPError(RuntimeError):
     """Transport or protocol failure talking to one server."""
 
 
+class MCPTransportUnknown(MCPError, UnknownEffect):
+    """The request may have reached the server; its effect is unknown."""
+
+
 class MCPClient:
     """One stdio server process: handshake, list, call, shut down.
 
@@ -46,11 +52,16 @@ class MCPClient:
     def __init__(self, name: str, command: str, args: list = (), env: dict | None = None):
         self.name = name
         self.call_timeout = CALL_TIMEOUT
+        environment = {**os.environ, **(env or {})}
+        environment.pop("RELIAGENT_CHECKPOINT_KEY", None)
+        binding = {"command": command, "args": list(args),
+                   "env": {k: v for k, v in (env or {}).items() if k != "RELIAGENT_CHECKPOINT_KEY"}}
+        self.binding_digest = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
         self._proc = subprocess.Popen(
             [command, *args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            env={**os.environ, **(env or {})},  # servers inherit the user env, config overrides
+            env=environment,
             encoding="utf-8",
             errors="replace",
             bufsize=1,  # line buffered: the transport is newline-delimited JSON
@@ -114,17 +125,23 @@ class MCPClient:
                 raise self._dead
             self._next_id += 1
             req_id = self._next_id
-        self._write({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
-        deadline = time.monotonic() + timeout
-        with self._cond:
-            while req_id not in self._responses:
-                if self._dead is not None:
-                    raise self._dead
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise MCPError(f"MCP server {self.name!r} gave no answer to {method} in {timeout:g}s")
-                self._cond.wait(left)
-            msg = self._responses.pop(req_id)
+        try:
+            # Once writing begins even a partial pipe write can have sent a request.
+            self._write({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
+            deadline = time.monotonic() + timeout
+            with self._cond:
+                while req_id not in self._responses:
+                    if self._dead is not None:
+                        raise self._dead
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise MCPError(f"MCP server {self.name!r} gave no answer to {method} in {timeout:g}s")
+                    self._cond.wait(left)
+                msg = self._responses.pop(req_id)
+        except MCPError as error:
+            if method == "tools/call":
+                raise MCPTransportUnknown(str(error)) from error
+            raise
         if "error" in msg:
             raise MCPError(f"MCP server {self.name!r} rejected {method}: {msg['error'].get('message', msg['error'])}")
         return msg.get("result", {})

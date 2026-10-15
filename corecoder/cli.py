@@ -1,12 +1,13 @@
 """Interactive REPL - the user-facing terminal interface."""
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
 
 from prompt_toolkit import prompt as pt_prompt
-from prompt_toolkit.history import FileHistory
+from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.markdown import Markdown
@@ -14,7 +15,7 @@ from rich.panel import Panel
 
 from . import __version__
 from .agent import Agent
-from .agent_runtime import AgentRuntimeSession
+from .agent_runtime import DurableAgentSession
 from .config import Config
 from .hooks import load_hooks
 from .llm import LLM, LiteLLM
@@ -22,7 +23,7 @@ from .mcp import load_mcp_tools
 from .permissions import Permission
 from .runtime import RunStatus
 from .session import list_sessions, load_session, save_session
-from .tools import ALL_TOOLS
+from .tools import builtin_tools
 
 console = Console()
 
@@ -38,22 +39,40 @@ def _parse_args():
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
     p.add_argument("--yes", action="store_true", help="Auto-approve every tool call (for scripts and CI)")
     p.add_argument("--runtime-workspace", type=Path, help="Runtime audit workspace (default: current directory)")
-    p.add_argument("--no-runtime", action="store_true", help="Disable Runtime management of read/write/edit/bash tools")
+    p.add_argument("--no-runtime", action="store_true", help="Use the legacy non-durable Agent")
     p.add_argument("--demo", action="store_true", help="Run the offline scripted demo (no API key needed)")
     p.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session")
+    p.add_argument("--resume-run", help="Resume an encrypted durable Run without adding a prompt")
+    p.add_argument("--run-status", metavar="RUN", help="Inspect durable Run state without a model")
+    p.add_argument("--retry-inference", metavar="RUN", help="Explicitly authorize repeating lost inference")
+    p.add_argument("--reconcile-invocation", metavar="ID", help="Reconcile an invocation in --resume-run")
+    p.add_argument("--decision", choices=["confirmed_completed", "confirmed_not_executed", "unresolved"])
+    p.add_argument("--evidence", help="Operator evidence supporting reconciliation or inference retry")
+    p.add_argument("--result-file", type=Path, help="Full confirmed tool output, read from this UTF-8 file")
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.resume_run and (args.resume or args.prompt or args.no_runtime):
+        p.error("--resume-run cannot be combined with -r, --prompt, or --no-runtime")
+    if args.reconcile_invocation and (not args.resume_run or not args.decision or not args.evidence):
+        p.error("reconciliation requires --resume-run, --decision, and --evidence")
+    if args.retry_inference and not args.evidence:
+        p.error("--retry-inference requires --evidence")
+    return args
 
 
 def _build_agent(
     llm, config: Config, permission: Permission, *, runtime_workspace: Path | None, runtime_enabled: bool,
-) -> tuple[Agent, AgentRuntimeSession | None]:
-    tools = [*ALL_TOOLS, *load_mcp_tools()]
-    hooks = load_hooks()
+    resume_run: str | None = None,
+    initial_messages: list | None = None,
+) -> tuple[Agent, DurableAgentSession | None]:
     session = None
     if runtime_enabled:
-        session = AgentRuntimeSession.open(runtime_workspace or Path.cwd(), config.model, permission)
-        tools = session.wrap_tools(tools)
+        session = DurableAgentSession.open(
+            runtime_workspace or Path.cwd(), config.model, permission,
+            key=os.environ.get("RELIAGENT_CHECKPOINT_KEY"), run_id=resume_run,
+        )
+    tools = [*builtin_tools(), *load_mcp_tools()]
+    hooks = load_hooks()
     agent = Agent(
         llm=llm,
         tools=tools,
@@ -61,11 +80,66 @@ def _build_agent(
         permission=permission,
         hooks=hooks,
     )
+    if initial_messages:
+        from copy import deepcopy
+        agent.messages = deepcopy(initial_messages)
+    if session is not None:
+        from .durable_operations import DurableOperations
+        agent.runtime_session = session
+        agent.durable_operations = DurableOperations(session, agent)
+        session.attach(agent)
     return agent, session
+
+
+def _runtime_action(args):
+    """Model-free inspection and explicit recovery, with no provider configuration."""
+    from .runtime import SQLiteStore, ToolCallStatus
+    from .runtime.agent_store import AgentJournal, RunLease
+    from .runtime.checkpoints import CheckpointCipher
+
+    workspace = (args.runtime_workspace or Path.cwd()).resolve()
+    cipher = CheckpointCipher()
+    store = SQLiteStore(workspace / ".reliagent" / "agent-runtime.sqlite")
+    store.initialize()
+    journal = AgentJournal(store, cipher)
+    run_id = args.run_status or args.retry_inference or args.resume_run
+    run = store.get_run(run_id)
+    if args.run_status:
+        checkpoint = journal.load(run_id)
+        calls = journal.list_invocations(run_id)
+        links = []
+        for link in checkpoint["state"].get("linked_operations", {}).values():
+            try:
+                phase = journal.load(link["run_id"])["phase"]
+            except KeyError:
+                phase = "not_initialized"
+            links.append({key: link[key] for key in ("run_id", "kind", "invocation_id")} | {"phase": phase})
+        console.print_json(data={"run_id": run_id, "status": run.status.value, "phase": checkpoint["phase"],
+                                 "invocations": [{key: item[key] for key in ("id", "tool_name", "state", "attempt_id")}
+                                                 for item in calls], "linked_operations": links})
+        return
+    with RunLease(workspace, run_id):
+        if args.retry_inference:
+            journal.authorize_llm_retry(run_id, evidence={"operator": args.evidence})
+        else:
+            call = next((item for item in journal.list_invocations(run_id) if item["id"] == args.reconcile_invocation), None)
+            if call is None or not call["attempt_id"]:
+                raise ValueError("invocation does not belong to this Run or has no started attempt")
+            attempt = store.get_tool_call(call["attempt_id"])
+            if attempt.status is ToolCallStatus.RUNNING:
+                store.transition_tool_call(attempt.id, ToolCallStatus.INTERRUPTED, "tool.interrupted",
+                                           payload={"reason": "operator inspected orphaned attempt"})
+            output = args.result_file.read_text(encoding="utf-8") if args.result_file else None
+            journal.reconcile(call["id"], args.decision, output=output, evidence={"operator": args.evidence})
+    console.print(f"Recovery decision recorded for Run {run_id}.")
 
 
 def main():
     args = _parse_args()
+
+    if args.run_status or args.retry_inference or args.reconcile_invocation:
+        _runtime_action(args)
+        return
 
     if args.demo:
         from .demo import run_demo
@@ -127,15 +201,18 @@ def main():
         llm, config, permission,
         runtime_workspace=args.runtime_workspace,
         runtime_enabled=not args.no_runtime,
+        resume_run=args.resume_run,
+        initial_messages=loaded[0] if loaded else None,
     )
 
     status = RunStatus.SUCCEEDED
     try:
         if loaded:
-            agent.messages = loaded[0]
             console.print(f"[green]Resumed session: {args.resume} (model: {agent.llm.model})[/green]")
 
-        if args.prompt:
+        if args.resume_run:
+            console.print(agent.resume())
+        elif args.prompt:
             _run_once(agent, args.prompt)
         else:
             _repl(agent, config)
@@ -211,7 +288,7 @@ def _repl(agent: Agent, config: Config):
     ))
 
     hist_path = os.path.expanduser("~/.corecoder_history")
-    history = FileHistory(hist_path)
+    history = InMemoryHistory() if agent.runtime_session else FileHistory(hist_path)
 
     # Enter submits, Escape+Enter inserts a newline (for pasting code blocks etc.)
     kb = KeyBindings()
@@ -240,6 +317,14 @@ def _repl(agent: Agent, config: Config):
         if not user_input:
             continue
 
+        if agent.runtime_session and (user_input in {"/reset", "/plan", "/compact", "/save", "/undo"}
+                                      or (agent.plan_mode and user_input.lower() in {"approve", "/approve"})):
+            try:
+                agent.runtime_session.ready(agent)
+            except ValueError as error:
+                console.print(f"[red]Error: {error}[/red]")
+                continue
+
         # built-in commands
         if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
             break
@@ -251,6 +336,8 @@ def _repl(agent: Agent, config: Config):
             console.print("[yellow]Conversation reset.[/yellow]")
             continue
         if user_input == "/plan":
+            if agent.runtime_session:
+                agent.runtime_session.ready(agent)
             agent.plan_mode = not agent.plan_mode
             if agent.plan_mode:
                 console.print(
@@ -276,6 +363,9 @@ def _repl(agent: Agent, config: Config):
             continue
         if user_input == "/model" or user_input.startswith("/model "):
             new_model = user_input[7:].strip() if user_input.startswith("/model ") else ""
+            if new_model and agent.runtime_session is not None:
+                console.print("A durable Run keeps its original model. Start a new Run to switch.")
+                continue
             if new_model:
                 agent.llm.model = new_model
                 config.model = new_model
@@ -286,7 +376,7 @@ def _repl(agent: Agent, config: Config):
         if user_input == "/compact":
             from .context import estimate_tokens
             before = estimate_tokens(agent.messages)
-            compressed = agent.context.maybe_compress(agent.messages, agent.llm)
+            compressed = agent.compact()
             after = estimate_tokens(agent.messages)
             if compressed:
                 console.print(f"[green]Compressed: {before} → {after} tokens ({len(agent.messages)} messages)[/green]")
@@ -294,6 +384,13 @@ def _repl(agent: Agent, config: Config):
                 console.print(f"[dim]Nothing to compress ({before} tokens, {len(agent.messages)} messages)[/dim]")
             continue
         if user_input == "/save":
+            if agent.runtime_session is not None:
+                reference = agent.runtime_session.export()
+                destination = Path(reference["workspace"]) / ".reliagent" / (reference["run_id"] + ".json")
+                destination.write_text(json.dumps(reference, indent=2), encoding="utf-8")
+                console.print(f"Run reference saved: {destination}")
+                console.print(f"Resume with: corecoder --resume-run {reference['run_id']}")
+                continue
             sid = save_session(agent.messages, config.model)
             console.print(f"[green]Session saved: {sid}[/green]")
             console.print(f"Resume with: corecoder -r {sid}")
@@ -308,11 +405,7 @@ def _repl(agent: Agent, config: Config):
                     console.print(f"  [cyan]{f}[/cyan]")
             continue
         if user_input == "/undo":
-            from .checkpoints import pending, undo
-            console.print(undo())
-            left = pending()
-            if left:
-                console.print(f"[dim]{left} more checkpoint(s) on the stack.[/dim]")
+            console.print(agent.undo())
             continue
         if user_input == "/sessions":
             sessions = list_sessions()

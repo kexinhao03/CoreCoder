@@ -194,9 +194,13 @@ def test_runtime_flags_parse_workspace_and_opt_out(monkeypatch, tmp_path):
 def test_runtime_builder_maps_permission_to_durable_approval(
     tmp_path, monkeypatch, answer, ask_count, status, decision, written,
 ):
+    from cryptography.fernet import Fernet
+
     from corecoder import cli
     from corecoder.config import Config
     from corecoder.runtime import RunStatus
+
+    monkeypatch.setenv("RELIAGENT_CHECKPOINT_KEY", Fernet.generate_key().decode())
 
     monkeypatch.setattr(cli, "load_mcp_tools", list)
     monkeypatch.setattr(cli, "load_hooks", lambda: None)
@@ -205,7 +209,7 @@ def test_runtime_builder_maps_permission_to_durable_approval(
         ask=(lambda name, args: asked.append((name, args)) or answer) if answer is not None else None,
     )
     agent, session = cli._build_agent(
-        ScriptedLLM(_two_writes_then_text(tmp_path)), Config(), permission,
+        ScriptedLLM(_two_writes_then_text(tmp_path)), Config(model="scripted-demo"), permission,
         runtime_workspace=tmp_path, runtime_enabled=True,
     )
 
@@ -221,7 +225,7 @@ def test_runtime_builder_maps_permission_to_durable_approval(
     assert [(a.status.value, a.decision.value) for a in approvals] == [(status, decision), (status, decision)]
     results = [message["content"] for message in agent.messages if message["role"] == "tool"]
     assert len(results) == 2
-    assert all(result.startswith("Wrote" if written else "Approval denied") for result in results)
+    assert all(result.startswith("Wrote" if written else "Permission denied") for result in results)
 
 
 def test_ask_prompt_maps_answers(monkeypatch):

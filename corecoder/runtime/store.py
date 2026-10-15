@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -867,6 +868,10 @@ class SQLiteStore:
         stored_arguments, arguments_replayable = redact_for_storage(
             tool_name, arguments
         )
+        if agent_invocation_id is not None:
+            encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            stored_arguments = {"sha256": hashlib.sha256(encoded).hexdigest(), "bytes": len(encoded)}
+            arguments_replayable = False
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")

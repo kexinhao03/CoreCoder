@@ -135,6 +135,14 @@ class AgentJournal:
                 (run_id, token),
             )
 
+    def request(self, run_id: str, sequence: int) -> dict:
+        with closing(self.store._connect()) as connection:
+            row = connection.execute("SELECT * FROM agent_turns WHERE run_id = ? AND sequence = ?",
+                                     (run_id, sequence)).fetchone()
+            if row is None:
+                raise KeyError("turn not found")
+            return self.cipher.open(self._turn_identity(row, "request"), row["request_ciphertext"])
+
     def load(self, run_id: str) -> dict:
         with closing(self.store._connect()) as connection:
             row, state = self._load(connection, run_id)
@@ -148,6 +156,37 @@ class AgentJournal:
             if row["phase"] not in {"ready", "complete"}:
                 raise ValueError("cannot replace an unfinished checkpoint")
             self._write_state(connection, row, state, phase)
+
+    def link_operation(self, invocation_id: str, kind: str, slot: int, details: dict) -> dict:
+        """Persist a linked identity without changing the active dispatch phase."""
+        key = f"{invocation_id}:{kind}:{slot}"
+        with self._transaction() as connection:
+            invocation = self._get_invocation(connection, invocation_id)
+            row, state = self._load(connection, invocation["run_id"])
+            if (invocation["state"] != "bound" or row["phase"] != "dispatching"
+                or connection.execute("SELECT status FROM tool_calls WHERE id = ?",
+                                      (invocation["current_attempt_id"],)).fetchone()[0] != "running"):
+                raise ValueError("link requires an approved started invocation")
+            links = state.setdefault("linked_operations", {})
+            if key not in links:
+                links[key] = {"run_id": uuid.uuid4().hex, "invocation_id": invocation_id,
+                              "kind": kind, **details}
+                self._write_state(connection, row, state, row["phase"])
+            return links[key]
+
+    def record_undo(self, invocation_id: str, target: str, prior: str | None) -> None:
+        """Capture exact original bytes before a durable file effect."""
+        with self._transaction() as connection:
+            invocation = self._get_invocation(connection, invocation_id)
+            row, state = self._load(connection, invocation["run_id"])
+            attempt = connection.execute("SELECT status FROM tool_calls WHERE id = ?",
+                                         (invocation["current_attempt_id"],)).fetchone()
+            if not attempt or attempt["status"] != "running" or row["phase"] != "dispatching":
+                raise ValueError("undo capture requires an active durable file operation")
+            snapshots = state.setdefault("undo", [])
+            if not any(item["snapshot_id"] == invocation_id for item in snapshots):
+                snapshots.append({"snapshot_id": invocation_id, "target": target, "prior": prior})
+                self._write_state(connection, row, state, row["phase"])
 
     def begin_turn(self, run_id: str, request: dict) -> int:
         with self._transaction() as connection:
@@ -392,7 +431,8 @@ class AgentJournal:
 
     def _bind_attempt(self, connection, invocation_id, run_id, tool_name, arguments, call_id, timestamp):
         invocation = self._get_invocation(connection, invocation_id)
-        row, _ = self._load(connection, run_id)
+        row, state = self._load(connection, run_id)
+        self._check_parent_admission(connection, state)
         if (
             invocation["run_id"] != run_id
             or invocation["tool_name"] != tool_name
@@ -430,6 +470,13 @@ class AgentJournal:
         # The attempt foreign key is assigned after its ToolCall row has been inserted.
         return step_id
 
+    def _check_parent_admission(self, connection, state):
+        parent = state.get("parent_run_id")
+        if parent:
+            run = connection.execute("SELECT status FROM runs WHERE id = ?", (parent,)).fetchone()
+            if run is None or run["status"] == "cancelled":
+                raise ValueError("parent Run cancelled; linked operation admission closed")
+
     def _transition_attempt(self, connection, call, status, token, timestamp):
         invocation = self.store._agent_invocation_for_attempt(connection, call["id"])
         if invocation is None:
@@ -438,7 +485,9 @@ class AgentJournal:
             return False
         if invocation["current_attempt_id"] != call["id"]:
             raise ValueError("agent attempt is not bound to its journal invocation")
-        checkpoint, _ = self._load(connection, invocation["run_id"])
+        checkpoint, state = self._load(connection, invocation["run_id"])
+        if status in {ToolCallStatus.RUNNING, ToolCallStatus.WAITING_APPROVAL}:
+            self._check_parent_admission(connection, state)
         self.cipher.open(self._invocation_identity(invocation, "arguments"), invocation["arguments_ciphertext"])
         if status in {ToolCallStatus.RUNNING, ToolCallStatus.WAITING_APPROVAL} and checkpoint["phase"] != "dispatching":
             raise ValueError("blocked checkpoint cannot start a tool")
@@ -448,6 +497,8 @@ class AgentJournal:
             if token is not None:
                 raise ValueError("interrupted effects cannot have a model result")
             connection.execute("UPDATE agent_invocations SET state = 'blocked' WHERE id = ?", (invocation["id"],))
+            connection.execute("UPDATE steps SET status = 'failed', updated_at = ?, ended_at = ? WHERE id = ?",
+                               (timestamp, timestamp, call["step_id"]))
             row, state = self._load(connection, invocation["run_id"])
             state["blocked_reason"] = "tool outcome is unknown"
             self._write_state(connection, row, state, "blocked")
@@ -475,6 +526,29 @@ class AgentJournal:
                 (step_status.value, timestamp, status.value, timestamp, terminal, timestamp, call["step_id"]),
             )
         return True
+
+    def reconcile_child(self, invocation_id: str) -> dict:
+        """Derive parent completion solely from an authenticated linked final child."""
+        from ..durable_operations import child_result
+
+        with self._transaction() as connection:
+            invocation = self._get_invocation(connection, invocation_id)
+            _, state = self._load(connection, invocation["run_id"])
+            link = state.get("linked_operations", {}).get(f"{invocation_id}:child:0")
+            if not link or link["invocation_id"] != invocation_id or link["kind"] != "child" or invocation["tool_name"] != "agent":
+                raise ValueError("verified child relationship required")
+            child, child_state = self._load(connection, link["run_id"])
+            run = connection.execute("SELECT status FROM runs WHERE id = ?", (link["run_id"],)).fetchone()
+            if child["phase"] != "complete" or run["status"] != "succeeded":
+                raise ValueError("child final output is not settled")
+            self._authenticate_turn(connection, link["run_id"], child["turn_sequence"])
+            final = child_state["messages"][-1]
+            if final.get("role") != "assistant" or final.get("tool_calls"):
+                raise ValueError("child final response required")
+            output = child_result(final.get("content") or "")
+        self.list_invocations(link["run_id"])
+        return self.reconcile(invocation_id, "confirmed_completed", output=output,
+                              evidence={"source": "authenticated_child_final", "child_run_id": link["run_id"]})
 
     def reconcile(self, invocation_id: str, decision: str, *, output: str | None = None, evidence: dict) -> dict:
         """Resolve an unknown effect from explicit operator evidence, never by guessing."""

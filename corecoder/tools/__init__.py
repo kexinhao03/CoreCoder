@@ -20,3 +20,8 @@ ALL_TOOLS = [
     AgentTool(),
 ]
 
+
+
+def builtin_tools() -> list:
+    """Fresh mutable tools for one conversation."""
+    return [type(tool)() for tool in ALL_TOOLS]

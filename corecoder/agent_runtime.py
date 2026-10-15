@@ -133,6 +133,11 @@ class DurableAgentSession(AgentRuntimeSession):
             raise ValueError("Agent is not attached to this durable session")
         if self.store.get_run(self.run_id).status is RunStatus.CANCELLED:
             raise ValueError("cancelled Run is history-only")
+        if self._agent is not None:
+            state = self.journal.load(self.run_id)["state"]
+            parent_run = state.get("parent_run_id")
+            if parent_run and self.store.get_run(parent_run).status is RunStatus.CANCELLED:
+                raise ValueError("parent Run cancelled; linked operation admission closed")
         if self._agent is not None and self.journal.load(self.run_id)["state"].get("metadata") != self._metadata(self._agent):
             raise ValueError("checkpoint model/tool/policy metadata signature mismatch")
 
@@ -174,6 +179,9 @@ class DurableAgentSession(AgentRuntimeSession):
             "policies": self.policies.signature([tool.name for tool in agent.tools] + ["__unknown__"]),
             "max_context_tokens": agent.context.max_tokens,
         }
+        from .durable_operations import configuration_fingerprint
+
+        metadata["operations"] = configuration_fingerprint(agent)
         return json.loads(json.dumps(metadata, sort_keys=True))
 
     def attach(self, agent):
@@ -196,6 +204,7 @@ class DurableAgentSession(AgentRuntimeSession):
                     "effective_messages": deepcopy(agent.messages), "effective_count": len(agent.messages),
                     "todo": deepcopy(agent._todo._tasks) if agent._todo is not None else [],
                     "cwd": self._cwd, "plan_mode": agent.plan_mode,
+                    "parent_run_id": getattr(self, "parent_run_id", None),
                 })
                 self._new = False
             state = self.journal.load(self.run_id)["state"]
@@ -342,6 +351,7 @@ class DurableAgentSession(AgentRuntimeSession):
     def dispatch(self, agent, invocation, *, on_tool=None):
         import inspect
         import json
+        import os
 
         from .runtime.executor import UnknownEffect
         from .runtime.policies import FailureKind
@@ -390,24 +400,31 @@ class DurableAgentSession(AgentRuntimeSession):
             if warning:
                 self.journal.complete_without_attempt(invocation["id"], f"Blocked: {warning}")
                 return
-            operation_arguments = {"argv": ["/bin/sh", "-c", command], "cwd": self._cwd}
+            argv = [os.environ.get("COMSPEC", "cmd.exe"), "/c", command] if os.name == "nt" else ["/bin/sh", "-c", command]
+            operation_arguments = {"argv": argv, "cwd": self._cwd}
+            if "input" in arguments:
+                operation_arguments["stdin"] = arguments["input"].encode("utf-8")
 
         def operation(args, cancellation):
             handler = self.operation_handlers.get(name)
             if handler is not None:
                 bound = next(item for item in self.journal.list_invocations(self.run_id) if item["id"] == invocation["id"])
-                return handler(agent, bound, args, cancellation)
-            # Shell hooks and legacy AgentTool need independently linked Runs.
-            if name == "agent":
-                raise UnknownEffect("durable child/hook operation handler is required")
-            return tool.execute(**args)
+                output = handler(agent, bound, args, cancellation)
+            else:
+                if name == "agent":
+                    raise UnknownEffect("durable child/hook operation handler is required")
+                output = tool.execute(**args)
+            if name in {"read_file", "write_file", "edit_file", "glob", "grep", "todo_write", "_undo"} and output.startswith(("Error:", "Invalid regex:")):
+                raise RuntimeError(output)
+            return output
 
         pre_refusal = None
 
         def finalize(output, failure_kind, exit_code):
             if pre_refusal is not None:
                 return pre_refusal, {"todo": agent._todo._tasks if agent._todo is not None else [], "cwd": self._cwd}
-            if policy.execution_kind is ExecutionKind.IN_PROCESS and failure_kind is FailureKind.EXECUTION_ERROR:
+            if (policy.execution_kind is ExecutionKind.IN_PROCESS and failure_kind is FailureKind.EXECUTION_ERROR
+                    and not output.startswith(("Error:", "Invalid regex:"))):
                 output = f"Error executing {name}: {output}"
             if policy.execution_kind is ExecutionKind.SUBPROCESS:
                 if failure_kind is FailureKind.TIMED_OUT:
@@ -458,6 +475,12 @@ class DurableAgentSession(AgentRuntimeSession):
                 checkpoint["phase"] not in {"ready", "complete"} or unfinished
             ):
                 return self.store.get_run(self.run_id)
+            if self.before_inference is not None:
+                try:
+                    self.before_inference(self._agent)
+                except Exception:  # noqa: BLE001 - retain unresolved linked operations for recovery
+                    # A committed main tool does not settle an unknown linked hook.
+                    return self.store.get_run(self.run_id)
             return super().finish(status)
         finally:
             self.close()
