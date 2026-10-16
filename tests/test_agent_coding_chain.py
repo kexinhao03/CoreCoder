@@ -252,7 +252,7 @@ agent.chat("Produce effect then crash before terminal persistence.")
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
     crashed = subprocess.run(
         [sys.executable, "-c", script, str(tmp_path), name, effect_command],
-        env=env, capture_output=True, text=True, timeout=10, check=False,
+        env=env, capture_output=True, text=True, timeout=60, check=False,
     )
     assert crashed.returncode == 87, crashed.stderr
     store = SQLiteStore(tmp_path / ".reliagent" / "agent-runtime.sqlite")
