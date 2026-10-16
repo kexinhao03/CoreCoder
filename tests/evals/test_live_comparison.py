@@ -222,3 +222,23 @@ scope['effect'](Path(sys.argv[2]))
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
+
+
+def test_completed_fallback_attempts_do_not_censor_chat_timing(sources, tmp_path, monkeypatch):
+    module = api()
+
+    def completed_fallback(path, trial, phase, deadline, key):
+        # A known HTTP400 parameter rejection and successful fallback are one completed chat.
+        events = [{'event': 'chat_start', 'phase': phase},
+                  {'event': 'request', 'phase': phase},
+                  {'event': 'request', 'phase': phase},
+                  {'event': 'response', 'phase': phase, 'model_seconds': 0.25}]
+        (path / 'provider.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+        return {'exit_code': 0, 'timed_out': False, 'fault_triggered': False}
+
+    monkeypatch.setattr(module, '_phase', completed_fallback)
+    row = module.run_trial(module.make_trial('E', 'normal', 0), tmp_path / 'fallback', sources,
+                           provider='fixture', deadline_seconds=20)
+    assert row['model_seconds'] == 0.25
+    assert row['model_timing_censored'] is False
+    assert row['non_model_seconds'] is not None

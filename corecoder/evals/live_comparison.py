@@ -218,7 +218,7 @@ def run_trial(trial, output, sources, *, model='qwen3:8b', base_url='http://127.
     provider_events = read_lines(path / 'provider.jsonl')
     row['model_seconds'] = None if provider_events is None else sum(item.get('model_seconds', 0) for item in provider_events)
     row['model_timing_censored'] = provider_events is None or (
-        sum(item['event'] == 'request' for item in provider_events)
+        sum(item['event'] == 'chat_start' for item in provider_events)
         != sum(item['event'] == 'response' for item in provider_events))
     row['non_model_seconds'] = None if row['model_timing_censored'] else max(0, row['elapsed_seconds'] - row['model_seconds'])
     atomic_json(path / 'result.json', row)

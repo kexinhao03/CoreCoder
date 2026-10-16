@@ -197,6 +197,8 @@ def _phase(path: Path, trial: dict, phase: str, deadline: float) -> dict:
 
 
 def run_trial(trial: dict, output: Path, deadline_seconds: float = 15) -> dict:
+    if trial['fault_type'] in {'runtime_kill', 'child_kill'} and os.name != 'posix':
+        raise ValueError('POSIX SIGKILL unavailable on this platform')
     path = Path(output).resolve() / trial['trial_id']
     path.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()

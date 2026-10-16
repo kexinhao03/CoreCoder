@@ -112,6 +112,7 @@ def execute(path, phase):
             if not durable:
                 accepted_boundary(messages)
             model_started = time.monotonic()
+            append(path / 'provider.jsonl', {'event': 'chat_start', 'phase': phase, 'provider': provider})
             if provider == 'fixture':
                 requests = sum(item['event'] == 'request' for item in lines(path / 'provider.jsonl'))
                 append(path / 'provider.jsonl', {'event': 'request', 'phase': phase, 'provider': 'fixture',

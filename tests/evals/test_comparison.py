@@ -2,10 +2,13 @@
 import importlib
 import importlib.util
 import json
+import os
 import signal
 import sqlite3
 
 import pytest
+
+POSIX_ONLY = pytest.mark.skipif(os.name != 'posix', reason='requires POSIX SIGKILL and process-liveness semantics')
 
 
 def comparison():
@@ -27,11 +30,12 @@ def trial(config='D', point='none', fault='none', workload='opaque', case='norma
 def test_matrix_is_complete_interleaved_and_excludes_inapplicable_children():
     mod = comparison()
     rows, skipped = mod.build_matrix(2, 1729)
-    # 2 workloads * 4 groups * 2 reps * (2 controls + 5*2 faults + 1 child fault)
-    assert len(rows) == 208
-    assert len({row['trial_id'] for row in rows}) == 208
+    # POSIX includes SIGKILL cells; other platforms retain the controls and all exceptions.
+    expected_rows, expected_skips = (208, 32) if mod.os.name == 'posix' else (112, 80)
+    assert len(rows) == expected_rows
+    assert len({row['trial_id'] for row in rows}) == expected_rows
     assert {row['config_id'] for row in rows} == {'A', 'B', 'C', 'D'}
-    assert len(skipped) == 32  # 4 non-child boundaries * 4 configs * 2 workloads
+    assert len(skipped) == expected_skips
     assert all(row['fault_point'] == 'during_tool_execution' for row in rows if row['fault_type'] == 'child_kill')
     assert mod.build_matrix(2, 1729) == (rows, skipped)
     assert mod.build_matrix(2, 1730)[0] != rows
@@ -83,13 +87,14 @@ def test_transient_preparation_retry_benefit(tmp_path, config, completed):
     assert row['human_intervention'] is False
 
 
+@pytest.mark.parametrize('fault', [pytest.param('runtime_kill', marks=POSIX_ONLY), 'exception'])
 @pytest.mark.parametrize('workload,complete,human', [('opaque', False, True), ('receipt', True, False)])
-def test_sigkill_after_effect_uses_real_recovery_without_replay(tmp_path, workload, complete, human):
-    row = comparison().run_trial(trial(point='after_effect_before_result_persist', fault='runtime_kill',
+def test_after_effect_uses_real_recovery_without_replay(tmp_path, workload, complete, human, fault):
+    row = comparison().run_trial(trial(point='after_effect_before_result_persist', fault=fault,
                                       workload=workload, case='fault'), tmp_path)
     path = tmp_path / row['trial_id']
     assert row['fault_triggered'] is True, row
-    assert row['initial_exit_code'] == -signal.SIGKILL
+    assert row['initial_exit_code'] == (-signal.SIGKILL if fault == 'runtime_kill' else 1)
     assert row['effect_count'] == 1
     assert row['unsafe_replay_count'] == 0
     assert row['human_intervention'] is human
@@ -103,8 +108,9 @@ def test_sigkill_after_effect_uses_real_recovery_without_replay(tmp_path, worklo
     assert effects == [('succeeded' if complete else 'interrupted',)]
 
 
-def test_sigkill_after_result_reuses_persisted_success(tmp_path):
-    row = comparison().run_trial(trial(point='after_result_before_next_inference', fault='runtime_kill', case='fault'), tmp_path)
+@pytest.mark.parametrize('fault', [pytest.param('runtime_kill', marks=POSIX_ONLY), 'exception'])
+def test_after_result_reuses_persisted_success(tmp_path, fault):
+    row = comparison().run_trial(trial(point='after_result_before_next_inference', fault=fault, case='fault'), tmp_path)
     assert row['fault_triggered'] and row['task_completed'], row
     assert row['effect_count'] == 1
     assert row['unsafe_replay_count'] == 0
@@ -113,7 +119,7 @@ def test_sigkill_after_result_reuses_persisted_success(tmp_path):
 
 
 def test_recovery_off_does_not_restart_or_count_reconciliation(tmp_path):
-    row = comparison().run_trial(trial('B', 'after_effect_before_result_persist', 'runtime_kill', case='fault'), tmp_path)
+    row = comparison().run_trial(trial('B', 'after_effect_before_result_persist', 'exception', case='fault'), tmp_path)
     assert row['effect_count'] == 1
     assert row['task_completed'] is False
     assert row['human_intervention'] is False
@@ -121,6 +127,7 @@ def test_recovery_off_does_not_restart_or_count_reconciliation(tmp_path):
     assert not (tmp_path / row['trial_id'] / 'resume.stdout').exists()
 
 
+@POSIX_ONLY
 def test_child_kill_is_not_runtime_kill_and_has_confirmed_exit(tmp_path):
     row = comparison().run_trial(trial(point='during_tool_execution', fault='child_kill', case='fault'), tmp_path)
     assert row['fault_triggered'] is True, row
@@ -131,7 +138,7 @@ def test_child_kill_is_not_runtime_kill_and_has_confirmed_exit(tmp_path):
 
 
 def test_failed_and_missed_rows_keep_evidence(tmp_path):
-    row = comparison().run_trial(trial(point='never_reached', fault='runtime_kill', case='fault'), tmp_path)
+    row = comparison().run_trial(trial(point='never_reached', fault='exception', case='fault'), tmp_path)
     assert row['outcome'] == 'missed_fault'
     assert row['valid'] is False
     assert row['task_completed'] is True
@@ -186,6 +193,7 @@ def test_deadline_retains_unknowns_and_pending_assignments_in_report(tmp_path):
     assert 'pending' in text.lower()
 
 
+@POSIX_ONLY
 def test_runtime_kill_during_child_keeps_fault_evidence_and_safely_blocks(tmp_path):
     row = comparison().run_trial(trial(point='during_tool_execution', fault='runtime_kill', case='fault'), tmp_path)
     assert row['valid'] and row['fault_triggered'], row
@@ -197,7 +205,7 @@ def test_runtime_kill_during_child_keeps_fault_evidence_and_safely_blocks(tmp_pa
 
 def test_fault_deadline_is_invalid_and_excluded_from_factorial_pairs(tmp_path):
     mod = comparison()
-    rows = [mod.run_trial(trial(config, 'during_tool_execution', 'runtime_kill', case='fault'),
+    rows = [mod.run_trial(trial(config, 'during_tool_execution', 'exception', case='fault'),
                           tmp_path, deadline_seconds=0.001) for config in 'ABCD']
     assert all(row['outcome'] == 'deadline' and not row['fault_triggered'] for row in rows)
     assert all(row['valid'] is False for row in rows)
@@ -215,14 +223,16 @@ def test_unconfirmed_fault_is_never_paired_even_in_legacy_valid_rows(completed, 
     assert all(value['n'] == 0 for value in report().paired_differences(rows).values())
 
 
+@POSIX_ONLY
 @pytest.mark.parametrize('point', ['during_tool_execution', 'never_reached'])
 def test_child_delayed_registration_exits_after_supervisor_deadline(tmp_path, monkeypatch, point):
-    import os
     import time
+    from types import SimpleNamespace
 
     mod = comparison()
     wrapper = tmp_path / 'delayed_registration.py'
     wrapper.write_text('''import json, os, sys, time
+time.sleep(2.5)  # Deliberately slower than the original two-second startup allowance.
 from corecoder.evals import comparison_worker as worker
 original_append = worker.append_json
 def delayed_append(path, value):
@@ -235,9 +245,12 @@ worker.append_json = delayed_append
 raise SystemExit(worker.main())
 ''')
     actual_phase = mod._phase
+    startup_deadline = None
 
     def delayed_phase(path, assigned, phase, deadline):
+        nonlocal startup_deadline
         if phase == 'initial':
+            startup_deadline = deadline
             manifest = mod.read_json(path / 'manifest.json')
             manifest['steps'][1]['argv'][1] = str(wrapper)
             mod.atomic_json(path / 'manifest.json', manifest)
@@ -246,15 +259,24 @@ raise SystemExit(worker.main())
     monkeypatch.setattr(mod, '_phase', delayed_phase)
     assigned = trial('A', point, 'runtime_kill', case='fault')
     directory = tmp_path / assigned['trial_id']
+    # Expire only the supervisor's test clock after a real child startup handshake.
+    # The tool retains a generous real deadline; parent loss must still stop it.
+    def supervisor_clock():
+        if startup_deadline is not None and (directory / 'registration-blocked.json').exists():
+            return max(time.monotonic(), startup_deadline + 1)
+        return time.monotonic()
+
+    monkeypatch.setattr(mod, 'time', SimpleNamespace(monotonic=supervisor_clock, sleep=time.sleep))
     child_pid = None
     try:
-        row = mod.run_trial(assigned, tmp_path, deadline_seconds=2)
+        row = mod.run_trial(assigned, tmp_path, deadline_seconds=30)
+        assert row['outcome'] == 'deadline', row
         blocked = mod.read_json(directory / 'registration-blocked.json')
         assert blocked is not None, row  # actual child launched, registration deliberately withheld
         child_pid = blocked['pid']
         assert not any(item.get('tool') == 'effect' for item in mod.read_lines(directory / 'children.jsonl'))
         (directory / 'release-registration').touch()
-        until = time.monotonic() + 2
+        until = time.monotonic() + 5
         while time.monotonic() < until:
             exits = mod.read_lines(directory / 'child-exits.jsonl') or []
             if any(item['pid'] == child_pid for item in exits):
@@ -264,7 +286,7 @@ raise SystemExit(worker.main())
         assert not (directory / 'handshake.json').exists()
         assert mod.observe_trial(directory)['effect_count'] == 0
         aborts = mod.read_lines(directory / 'child-aborts.jsonl')
-        assert any(item['pid'] == child_pid and item['parent_lost'] and item['deadline_expired'] for item in aborts)
+        assert any(item['pid'] == child_pid and item['parent_lost'] for item in aborts)
         # Verify actual process disappearance, not only an exit-intent record.
         while time.monotonic() < until:
             try:
@@ -280,3 +302,30 @@ raise SystemExit(worker.main())
                 os.kill(child_pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_non_posix_selector_satisfies_matrix_contract(monkeypatch):
+    from types import SimpleNamespace
+
+    mod = comparison()
+    monkeypatch.setattr(mod, 'os', SimpleNamespace(name='nt'))
+    test_matrix_is_complete_interleaved_and_excludes_inapplicable_children()
+    rows, skipped = mod.build_matrix(2, 1729)
+    assert len(rows) == 112
+    assert len(skipped) == 80
+    assert {row['fault_type'] for row in rows} == {'none', 'exception'}
+    assert {row['case_id'] for row in rows} == {'normal', 'retry_only', 'fault'}
+    assert all(item['fault_type'] in {'runtime_kill', 'child_kill'} for item in skipped)
+
+
+@pytest.mark.parametrize('fault', ['runtime_kill', 'child_kill'])
+def test_direct_non_posix_kill_is_refused_before_artifacts_or_effects(tmp_path, monkeypatch, fault):
+    from types import SimpleNamespace
+
+    mod = comparison()
+    simulated_os = SimpleNamespace(**vars(mod.os))
+    simulated_os.name = 'nt'
+    monkeypatch.setattr(mod, 'os', simulated_os)
+    with pytest.raises(ValueError, match='POSIX SIGKILL'):
+        mod.run_trial(trial(point='during_tool_execution', fault=fault, case='fault'), tmp_path)
+    assert list(tmp_path.iterdir()) == []
