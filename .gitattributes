@@ -1,3 +1,4 @@
 *.sh text eol=lf
 evidence/reliagent/** text eol=lf
+evidence/reliagent/**/*.tar.gz binary
 corecoder/workflows/ml_experiment/fixture/data.csv text eol=lf
