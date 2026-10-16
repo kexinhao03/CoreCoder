@@ -47,7 +47,7 @@ def test_worker_imports_pristine_upstream_even_with_current_modules_preloaded(so
     assert not (path / 'worker-resume.json').exists()
     manifest = json.loads((path / 'manifest.json').read_text())
     assert manifest['model'] == 'qwen3:8b'
-    assert manifest['generation'] == {'temperature': 0, 'max_tokens': 1024, 'extra_body': {'think': False}}
+    assert manifest['generation'] == {'temperature': 0, 'max_tokens': 1024, 'reasoning_effort': 'none'}
     assert 'api_key' not in json.dumps(manifest)
 
 

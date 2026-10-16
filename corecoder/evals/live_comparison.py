@@ -27,7 +27,7 @@ WORKER = Path(__file__).with_name('live_comparison_worker.py')
 UPSTREAM = '069948d180cb0ceb1a6d7aafeb0e141c166a009d'
 CONFIGS = {'D_agent': {'recovery': True, 'auto_tool_retry': False, 'retry_not_exercised': True},
            'E': {'recovery': False, 'auto_tool_retry': False, 'pristine_upstream': UPSTREAM}}
-GENERATION = {'temperature': 0, 'max_tokens': 1024, 'extra_body': {'think': False}}
+GENERATION = {'temperature': 0, 'max_tokens': 1024, 'reasoning_effort': 'none'}
 POINTS = {'normal': 'none', 'after_effect': 'after_effect_before_result_persist',
           'after_result': 'after_result_before_next_inference',
           'after_accepted_result': 'after_accepted_tool_result_before_next_inference'}
@@ -173,7 +173,7 @@ def run_trial(trial, output, sources, *, model='qwen3:8b', base_url='http://127.
         'source': sources[trial['config_id']], 'worker_path': str(worker_path),
         'worker_sha256': hashlib.sha256(worker_path.read_bytes()).hexdigest(), 'model': model, 'base_url': base_url, 'generation': GENERATION,
         'provider': provider, 'fixture_mode': fixture_mode, 'prompt': prompt, 'command': command,
-        'prompt_version': 'live-effect-v2-short-command', 'path_environment': os.environ.get('PATH', ''),
+        'prompt_version': 'live-effect-v3-compatible-thinking', 'path_environment': os.environ.get('PATH', ''),
         'checkpoint_key_permissions': oct(key.stat().st_mode & 0o777), 'max_context_tokens': 4096, 'max_rounds': 12, 'deadline_monotonic': deadline, 'deadline_seconds': deadline_seconds})
     for name in ('effects', 'dispatch', 'observer', 'provider', 'tools', 'approvals', 'sql'):
         (path / f'{name}.jsonl').write_text('')
