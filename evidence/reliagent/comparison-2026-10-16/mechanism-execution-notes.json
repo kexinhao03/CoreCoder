@@ -1,0 +1,5 @@
+{
+  "source_frozen": true,
+  "concurrent_activity": "Live-comparison implementation and focused development tests on same host while mechanism suite runs; no second mechanism run",
+  "timing_limit": "Instrumented end-to-end latency includes startup/fsync and may include host-load variation. It is not isolated production microbenchmark overhead. Group order is interleaved by recorded seed."
+}

@@ -12,7 +12,7 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml)
-[![engine](https://img.shields.io/badge/engine-1182_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
+[![engine](https://img.shields.io/badge/engine-1245_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 [![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index.md)
 
 </div>
@@ -27,11 +27,11 @@
 | 范围 | 交付边界与事实来源 |
 | --- | --- |
 | 上游基线 | CoreCoder 原始 Agent、文章与素材固定于上游提交 [`069948d180cb0ceb1a6d7aafeb0e141c166a009d`](https://github.com/he-yufeng/CoreCoder/commit/069948d180cb0ceb1a6d7aafeb0e141c166a009d)。本地仅设置 `.gitignore` 的提交为 `c45968d527944386015750f98bcd76ef91277576`；其子提交 `da7ad0fdcca4e392b2bbc01419fe4cb510a8fec5` 是首个 ReliAgent 提交。 |
-| Runtime | 此 Fork 加入 Runtime；默认 Agent 路径将 `read_file`、`write_file`、`edit_file` 和 `bash` 包装进 Runtime，其他 Agent 工具尚未 Runtime 化。 |
-| Recovery CLI | `reliagent` CLI 暴露固定 workflow 的恢复与对账，并非交互式 Agent 的恢复入口。 |
-| 评测 | 结果比较三个 **Runtime 配置**：`no_retry_no_recovery`、`full`、`no_recovery`，并非外部 baseline。 |
+| Runtime | 默认 Agent 的所有内置工具和 MCP 调用统一经过 Runtime；消息、原调用身份和结果加密持久化，支持恢复后继续推理。 |
+| Recovery CLI | `corecoder --resume-run` 恢复真实 Agent Run，状态查询和显式对账不需要调用模型；`reliagent` 保留固定工作流恢复。 |
+| 评测 | [对照评测](docs/evaluation-comparison.md) 用 A–D 分离重试和恢复作用，另将真实 Qwen Agent 与原始上游 E 比较；分别报告完成率、重放、人工对账、恢复耗时和开销。 |
 | ML workflow | 当前只有一个确定性本地 workflow；第二个 workflow 尚未实现。 |
-| 证据 | [`a7579ac`](evidence/reliagent/a7579ac/) 是当前快照，评测冻结的 Runtime Commit `a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd`：ML 24/24、phase3 90/90 场景契约通过。本地打包验收覆盖隔离构建、`twine check`、全新环境 wheel 安装、两个 CLI help 与安装后 ML 评测 24/24；P1 Metrics/Trace provenance 与 external baseline 仍 deferred。 |
+| 证据 | [对照实验报告](evidence/reliagent/comparison-2026-10-16/) 保留样本量、分母、失败案例与源码溯源。历史 [`a7579ac`](evidence/reliagent/a7579ac/) 的 90/90 Runtime 和 24/24 工作流是**场景契约检查**，不能代替对照任务完成率。 |
 
 请在此 Fork 提交问题与变更：[kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues)。
 
@@ -43,7 +43,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1182 行 / 整包 9215 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 1245 行 / 整包 12222 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -54,7 +54,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1182 行。连最外层的 CLI、配置、打包和持久化运行时一起算，当前源码整包 64 个文件、物理 10311 行、净 9215 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
+引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1245 行。连最外层的 CLI、配置、打包和持久化运行时一起算，当前源码整包 72 个文件、物理 13649 行、净 12222 行。计数以 `tests/test_core.py` 的算法为准：引擎为 `agent.py`、`llm.py`、`context.py`、`session.py` 与 `corecoder/tools/*.py`，整包为全部 `corecoder/**/*.py`。自 1161 行快照之后的增长都花在了看得见的功能上：plan mode、hooks、checkpoints，以及 ReliAgent Runtime 与机器学习 Workflow，下文各有交代。
 
 它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你。任何要动你磁盘、要跑命令的调用，都会先停下来等你点头；当前全量测试结果随已检入的 Runtime 证据记录，不在概览里冻结一个会过期的数字，另有一个真实模型集成测试需显式启用。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
@@ -296,7 +296,7 @@ REPL 里 `/plan` 开关计划模式。开着的时候，提示符变成 `(plan)`
 sh scripts/reliagent_ml_demo.sh
 ```
 
-[架构图与状态机](docs/reliagent/architecture.md)、[简历表述边界](docs/reliagent/resume-evidence.md)与当前 [`a7579ac` 证据](evidence/reliagent/a7579ac/)说明当前范围。该证据评测冻结的 Runtime Commit `a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd`，并记录精确命令、ML 24/24 与 phase3 90/90 场景契约通过数、文件哈希和测试结果。本地打包验收覆盖隔离构建、`twine check`、全新环境 wheel 安装、两个 CLI help 与安装后 ML 评测 24/24；P1 Metrics/Trace provenance 与 external baseline comparison 仍 deferred，不声称 strict-v2 完成。
+[架构图与状态机](docs/reliagent/architecture.md)和[简历表述边界](docs/reliagent/resume-evidence.md)保留固定工作流背景。历史 [`a7579ac` 证据](evidence/reliagent/a7579ac/)记录 ML 24/24、Runtime 90/90 场景契约检查；当前[对照报告](evidence/reliagent/comparison-2026-10-16/)另记录 1,040 轮 A–D 机制实验和 35 轮真实 Qwen Agent 与原始上游 E 对照，包含失败、人工对账、开销和审计缺口。这些受控结果不代表通用 exactly-once 保证。
 
 ```mermaid
 flowchart LR

@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-16",
+  "scope": "Local macOS Python3.12.14; remote CI separate",
+  "code_commit": "3478b885cd843814db65158339bab11570688a7c",
+  "python_source_sha256": "724603b70eb16ab5d56dfa7e98417be0dda28bf362ee919f99698f8c783c032e",
+  "measured_live_source_equals_current_python": true,
+  "pytest": {
+    "passed": 737,
+    "skipped": 2,
+    "seconds": 119.33
+  },
+  "ruff": "corecoder tests passed",
+  "compileall": "corecoder tests passed",
+  "build": "wheel and sdist built; twine passed",
+  "mechanism": {
+    "assigned": 1040,
+    "confirmed_faults": 880,
+    "invalid": 0
+  },
+  "real_qwen": {
+    "assigned": 35,
+    "inapplicable": 5,
+    "confirmed_sigkill_faults": 25,
+    "invalid": 0
+  },
+  "known_limit": "20 durable Agent traces retain missing independent Step lifecycle event flags; full tool/state/provider evidence preserved"
+}

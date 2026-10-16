@@ -1,0 +1,201 @@
+diff --git a/corecoder/agent_runtime.py b/corecoder/agent_runtime.py
+index 6d08dbc..3f3a20c 100644
+--- a/corecoder/agent_runtime.py
++++ b/corecoder/agent_runtime.py
+@@ -184,6 +184,20 @@ class DurableAgentSession(AgentRuntimeSession):
+         metadata["operations"] = configuration_fingerprint(agent)
+         return json.loads(json.dumps(metadata, sort_keys=True))
+ 
++    def preflight(self):
++        """Own and authenticate recovery state before discovering external tools."""
++        if not self._owned:
++            self._lease.acquire()
++            self._owned = True
++        try:
++            self._require_owner()
++            if not self._new:
++                self.journal.load(self.run_id)
++                self.journal.list_invocations(self.run_id)
++        except BaseException:
++            self.close()
++            raise
++
+     def attach(self, agent):
+         from copy import deepcopy
+ 
+@@ -192,8 +206,7 @@ class DurableAgentSession(AgentRuntimeSession):
+             return self
+         if self._agent is not None:
+             raise ValueError("session already has an attached Agent")
+-        self._lease.acquire()
+-        self._owned = True
++        self.preflight()
+         try:
+             self._require_owner()
+             if agent.llm.model != self.store.get_run(self.run_id).model:
+diff --git a/corecoder/cli.py b/corecoder/cli.py
+index 28314d3..04544fb 100644
+--- a/corecoder/cli.py
++++ b/corecoder/cli.py
+@@ -71,24 +71,31 @@ def _build_agent(
+             runtime_workspace or Path.cwd(), config.model, permission,
+             key=os.environ.get("RELIAGENT_CHECKPOINT_KEY"), run_id=resume_run,
+         )
+-    tools = [*builtin_tools(), *load_mcp_tools()]
+-    hooks = load_hooks()
+-    agent = Agent(
+-        llm=llm,
+-        tools=tools,
+-        max_context_tokens=config.max_context_tokens,
+-        permission=permission,
+-        hooks=hooks,
+-    )
+-    if initial_messages:
+-        from copy import deepcopy
+-        agent.messages = deepcopy(initial_messages)
+-    if session is not None:
+-        from .durable_operations import DurableOperations
+-        agent.runtime_session = session
+-        agent.durable_operations = DurableOperations(session, agent)
+-        session.attach(agent)
+-    return agent, session
++    try:
++        if session is not None:
++            session.preflight()
++        tools = [*builtin_tools(), *load_mcp_tools()]
++        hooks = load_hooks()
++        agent = Agent(
++            llm=llm,
++            tools=tools,
++            max_context_tokens=config.max_context_tokens,
++            permission=permission,
++            hooks=hooks,
++        )
++        if initial_messages:
++            from copy import deepcopy
++            agent.messages = deepcopy(initial_messages)
++        if session is not None:
++            from .durable_operations import DurableOperations
++            agent.runtime_session = session
++            agent.durable_operations = DurableOperations(session, agent)
++            session.attach(agent)
++        return agent, session
++    except BaseException:
++        if session is not None:
++            session.close()
++        raise
+ 
+ 
+ def _runtime_action(args):
+diff --git a/corecoder/durable_operations.py b/corecoder/durable_operations.py
+index 9814c4d..8b61d6d 100644
+--- a/corecoder/durable_operations.py
++++ b/corecoder/durable_operations.py
+@@ -8,7 +8,7 @@ from pathlib import Path
+ 
+ from .permissions import Permission
+ from .runtime.executor import UnknownEffect
+-from .runtime.state import InvalidTransition, RunStatus
++from .runtime.state import InvalidTransition, RunStatus, ToolCallStatus
+ from .tools import builtin_tools
+ from .tools.base import Tool
+ from .tools.bash import BashTool
+@@ -282,12 +282,41 @@ class DurableOperations:
+     def gate(self, agent):
+         self._admit()
+         invocations = {item["id"]: item for item in self.session.journal.list_invocations(self.session.run_id)}
+-        for link in self._links():
++        links = self._links()
++        completed_hooks = set()
++        # Validate every existing effect before admitting any pending post-hook.
++        for link in links:
++            with self.session.store._connect() as connection:
++                initialized = connection.execute("SELECT 1 FROM agent_sessions WHERE run_id = ?", (link["run_id"],)).fetchone()
++            if not initialized:
++                if link["kind"] == "child":
++                    raise ValueError("unfinished linked child blocks execution")
++                continue  # Reserved hook identity has not admitted an effect.
++            checkpoint = self.session.journal.load(link["run_id"])
++            calls = self.session.journal.list_invocations(link["run_id"])
++            if link["kind"] == "child":
++                if (checkpoint["phase"] != "complete"
++                        or self.session.store.get_run(link["run_id"]).status is not RunStatus.SUCCEEDED
++                        or any(call["state"] != "completed" for call in calls)):
++                    raise ValueError("unknown or unfinished linked child blocks execution")
++            elif checkpoint["phase"] == "blocked" or any(
++                call["state"] != "completed" and call["attempt_id"]
++                and self.session.store.get_tool_call(call["attempt_id"]).status not in {
++                    ToolCallStatus.CREATED, ToolCallStatus.WAITING_APPROVAL,
++                } for call in calls
++            ):
++                self._hook(link, invocations[link["invocation_id"]])  # Own and mark a restored running attempt interrupted.
++                raise ValueError("unknown linked hook blocks execution")
++            elif calls and all(call["state"] == "completed" for call in calls):
++                completed_hooks.add(link["run_id"])
++        for link in links:
+             invocation = invocations[link["invocation_id"]]
+-            if link["kind"] == "post" and invocation["state"] == "completed":
++            if ((link["kind"] == "post" and invocation["state"] == "completed")
++                    or (link["kind"] == "pre" and link["run_id"] in completed_hooks)):
+                 self._hook(link, invocation)
+ 
+ 
++
+ def configuration_fingerprint(agent):
+     hooks = {"pre": agent.hooks.pre, "post": agent.hooks.post} if agent.hooks else None
+     return {
+diff --git a/corecoder/hooks.py b/corecoder/hooks.py
+index 41bef7e..4d90004 100644
+--- a/corecoder/hooks.py
++++ b/corecoder/hooks.py
+@@ -76,7 +76,7 @@ def _fire(hook: dict, payload: dict):
+         proc = subprocess.run(
+             hook["command"], shell=True, check=False, input=json.dumps(payload),
+             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT,
+-            env={k: v for k, v in os.environ.items() if k != "RELIAGENT_CHECKPOINT_KEY"},
++            env={k: v for k, v in os.environ.items() if k.upper() != "RELIAGENT_CHECKPOINT_KEY"},
+         )
+     except (subprocess.TimeoutExpired, OSError) as e:
+         log.warning("hook skipped (%s): %s", e.__class__.__name__, hook["command"])
+diff --git a/corecoder/mcp.py b/corecoder/mcp.py
+index d90bff5..0c01a4b 100644
+--- a/corecoder/mcp.py
++++ b/corecoder/mcp.py
+@@ -53,9 +53,9 @@ class MCPClient:
+         self.name = name
+         self.call_timeout = CALL_TIMEOUT
+         environment = {**os.environ, **(env or {})}
+-        environment.pop("RELIAGENT_CHECKPOINT_KEY", None)
++        environment = {k: v for k, v in environment.items() if k.upper() != "RELIAGENT_CHECKPOINT_KEY"}
+         binding = {"command": command, "args": list(args),
+-                   "env": {k: v for k, v in (env or {}).items() if k != "RELIAGENT_CHECKPOINT_KEY"}}
++                   "env": {k: v for k, v in (env or {}).items() if k.upper() != "RELIAGENT_CHECKPOINT_KEY"}}
+         self.binding_digest = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+         self._proc = subprocess.Popen(
+             [command, *args],
+diff --git a/corecoder/runtime/processes.py b/corecoder/runtime/processes.py
+index 5666207..b8b5374 100644
+--- a/corecoder/runtime/processes.py
++++ b/corecoder/runtime/processes.py
+@@ -96,7 +96,7 @@ class ManagedProcessRunner:
+             json.dumps(spec.argv, separators=(",", ":")).encode()
+         ).hexdigest()
+         environment = dict(os.environ if spec.environment is None else spec.environment)
+-        environment.pop("RELIAGENT_CHECKPOINT_KEY", None)
++        environment = {k: v for k, v in environment.items() if k.upper() != "RELIAGENT_CHECKPOINT_KEY"}
+         environment["RELIAGENT_PROCESS_TOKEN"] = process_token
+         try:
+             process = subprocess.Popen(
+diff --git a/corecoder/tools/bash.py b/corecoder/tools/bash.py
+index 0624d13..ee15e03 100644
+--- a/corecoder/tools/bash.py
++++ b/corecoder/tools/bash.py
+@@ -79,7 +79,7 @@ class BashTool(Tool):
+                 errors="replace",
+                 timeout=timeout,
+                 cwd=cwd,
+-                env={k: v for k, v in os.environ.items() if k != "RELIAGENT_CHECKPOINT_KEY"},
++                env={k: v for k, v in os.environ.items() if k.upper() != "RELIAGENT_CHECKPOINT_KEY"},
+             )
+ 
+             # track cd commands so next command runs in the right place

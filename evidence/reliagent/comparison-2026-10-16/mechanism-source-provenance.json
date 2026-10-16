@@ -1,0 +1,10 @@
+{
+  "head": "32e48c773a658175e816e34762ee2b520a5ea32f",
+  "tracked_diff_sha256": "068e398cdcabfc823607ab1578c9fe3d275bed5e9cdbf30eecff96ba9f1ab511",
+  "python_source_sha256": "d9a222feee3ba663fe87c013f3ceb2e9da284f315e808182412be93347ed6974",
+  "python": "3.12.14 (main, Aug 25 2026, 13:50:33) [Clang 22.1.3 ]",
+  "platform": "macOS-26.1-arm64-arm-64bit",
+  "executable": "<REPO>/.venv/bin/python",
+  "frozen_source": "<REPO>/.tmp/factorial-32e48c7-source",
+  "scope": "Mechanism experiment, actual working-tree Python source including earlier durable-loop fixes"
+}

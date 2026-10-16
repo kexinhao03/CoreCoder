@@ -1,0 +1,855 @@
+{
+  "trials": 35,
+  "assigned": 35,
+  "confirmed_sigkill_faults": 25,
+  "issues": [
+    [
+      "D_agent-normal-4",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_accepted_result-2",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_result-2",
+      "trace integrity"
+    ],
+    [
+      "D_agent-normal-1",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_effect-3",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_result-3",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_accepted_result-1",
+      "trace integrity"
+    ],
+    [
+      "D_agent-normal-2",
+      "trace integrity"
+    ],
+    [
+      "D_agent-normal-0",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_result-0",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_accepted_result-4",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_result-1",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_effect-2",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_effect-1",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_effect-4",
+      "trace integrity"
+    ],
+    [
+      "D_agent-normal-3",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_accepted_result-0",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_result-4",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_accepted_result-3",
+      "trace integrity"
+    ],
+    [
+      "D_agent-after_effect-0",
+      "trace integrity"
+    ]
+  ],
+  "private_keys_retained_outside_evidence": 35,
+  "key_value_leaks_in_evidence": 0,
+  "all_trial_files_hashed": true,
+  "status": "tool_effect_identity_audit_passed_with_step_event_gaps",
+  "trace_step_event_gap_runs": 20,
+  "critical_tool_oracle_issues": [],
+  "step_event_gap_details": [
+    {
+      "trial_id": "D_agent-normal-4",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "8918b388c65c413db41f9bc0d856a52f"
+        },
+        {
+          "event": "step.started",
+          "step_id": "8918b388c65c413db41f9bc0d856a52f"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "8918b388c65c413db41f9bc0d856a52f"
+        },
+        {
+          "event": "step.created",
+          "step_id": "98a9d0a9ea1043219314b5dcc2c23a10"
+        },
+        {
+          "event": "step.started",
+          "step_id": "98a9d0a9ea1043219314b5dcc2c23a10"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "98a9d0a9ea1043219314b5dcc2c23a10"
+        },
+        {
+          "event": "step.created",
+          "step_id": "f6b1f600c10d4c4aa08c2615e551d629"
+        },
+        {
+          "event": "step.started",
+          "step_id": "f6b1f600c10d4c4aa08c2615e551d629"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "f6b1f600c10d4c4aa08c2615e551d629"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_accepted_result-2",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "9fc8143c957a47a2afab5467ccfeb09a"
+        },
+        {
+          "event": "step.started",
+          "step_id": "9fc8143c957a47a2afab5467ccfeb09a"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "9fc8143c957a47a2afab5467ccfeb09a"
+        },
+        {
+          "event": "step.created",
+          "step_id": "8115b11385f94f3bb1df22b2f8aa4fea"
+        },
+        {
+          "event": "step.started",
+          "step_id": "8115b11385f94f3bb1df22b2f8aa4fea"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "8115b11385f94f3bb1df22b2f8aa4fea"
+        },
+        {
+          "event": "step.created",
+          "step_id": "1a9405ffa2754470a1d43611f586a802"
+        },
+        {
+          "event": "step.started",
+          "step_id": "1a9405ffa2754470a1d43611f586a802"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "1a9405ffa2754470a1d43611f586a802"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_result-2",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "cfa4865d97ae4bc5bbf4efcbb591b08c"
+        },
+        {
+          "event": "step.started",
+          "step_id": "cfa4865d97ae4bc5bbf4efcbb591b08c"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "cfa4865d97ae4bc5bbf4efcbb591b08c"
+        },
+        {
+          "event": "step.created",
+          "step_id": "7408980ed36e4415863b99a78a8b9a48"
+        },
+        {
+          "event": "step.started",
+          "step_id": "7408980ed36e4415863b99a78a8b9a48"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "7408980ed36e4415863b99a78a8b9a48"
+        },
+        {
+          "event": "step.created",
+          "step_id": "5aff44679cbe4b32953d8b2329312be2"
+        },
+        {
+          "event": "step.started",
+          "step_id": "5aff44679cbe4b32953d8b2329312be2"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "5aff44679cbe4b32953d8b2329312be2"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-normal-1",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "fd06d93c940644df900f77b9888e883d"
+        },
+        {
+          "event": "step.started",
+          "step_id": "fd06d93c940644df900f77b9888e883d"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "fd06d93c940644df900f77b9888e883d"
+        },
+        {
+          "event": "step.created",
+          "step_id": "fea1f489806f4521899d3f52f31e4544"
+        },
+        {
+          "event": "step.started",
+          "step_id": "fea1f489806f4521899d3f52f31e4544"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "fea1f489806f4521899d3f52f31e4544"
+        },
+        {
+          "event": "step.created",
+          "step_id": "a15145de6fac4849b518be86a60d7c80"
+        },
+        {
+          "event": "step.started",
+          "step_id": "a15145de6fac4849b518be86a60d7c80"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "a15145de6fac4849b518be86a60d7c80"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_effect-3",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "9552cf24a73244faa7730cfc72e41ee5"
+        },
+        {
+          "event": "step.started",
+          "step_id": "9552cf24a73244faa7730cfc72e41ee5"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "9552cf24a73244faa7730cfc72e41ee5"
+        },
+        {
+          "event": "step.created",
+          "step_id": "e887d8d47e1747acbc8da154d619d35a"
+        },
+        {
+          "event": "step.started",
+          "step_id": "e887d8d47e1747acbc8da154d619d35a"
+        },
+        {
+          "event": "step.failed",
+          "step_id": "e887d8d47e1747acbc8da154d619d35a"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_result-3",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "d34bca3449694db0b7307556223fd7d4"
+        },
+        {
+          "event": "step.started",
+          "step_id": "d34bca3449694db0b7307556223fd7d4"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "d34bca3449694db0b7307556223fd7d4"
+        },
+        {
+          "event": "step.created",
+          "step_id": "4e6880d645424a489193a50b62b8012b"
+        },
+        {
+          "event": "step.started",
+          "step_id": "4e6880d645424a489193a50b62b8012b"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "4e6880d645424a489193a50b62b8012b"
+        },
+        {
+          "event": "step.created",
+          "step_id": "a0e9660619c14187943d5f082a2cd4da"
+        },
+        {
+          "event": "step.started",
+          "step_id": "a0e9660619c14187943d5f082a2cd4da"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "a0e9660619c14187943d5f082a2cd4da"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_accepted_result-1",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "419549522e894f9d90b61574477c8cfb"
+        },
+        {
+          "event": "step.started",
+          "step_id": "419549522e894f9d90b61574477c8cfb"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "419549522e894f9d90b61574477c8cfb"
+        },
+        {
+          "event": "step.created",
+          "step_id": "f49c52affbde4521a20619ebd6fe24bf"
+        },
+        {
+          "event": "step.started",
+          "step_id": "f49c52affbde4521a20619ebd6fe24bf"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "f49c52affbde4521a20619ebd6fe24bf"
+        },
+        {
+          "event": "step.created",
+          "step_id": "69f7a067be8a44198106e0f4c9f67347"
+        },
+        {
+          "event": "step.started",
+          "step_id": "69f7a067be8a44198106e0f4c9f67347"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "69f7a067be8a44198106e0f4c9f67347"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-normal-2",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "b255f7082f3d43fabf6aab28b69b60df"
+        },
+        {
+          "event": "step.started",
+          "step_id": "b255f7082f3d43fabf6aab28b69b60df"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "b255f7082f3d43fabf6aab28b69b60df"
+        },
+        {
+          "event": "step.created",
+          "step_id": "b029bac4edb943a68ff6ad19afe90f03"
+        },
+        {
+          "event": "step.started",
+          "step_id": "b029bac4edb943a68ff6ad19afe90f03"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "b029bac4edb943a68ff6ad19afe90f03"
+        },
+        {
+          "event": "step.created",
+          "step_id": "4098af01a6e148efa62342deca8d3e82"
+        },
+        {
+          "event": "step.started",
+          "step_id": "4098af01a6e148efa62342deca8d3e82"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "4098af01a6e148efa62342deca8d3e82"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-normal-0",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "2a15ddce8cbc4ec9b0415e978d81968a"
+        },
+        {
+          "event": "step.started",
+          "step_id": "2a15ddce8cbc4ec9b0415e978d81968a"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "2a15ddce8cbc4ec9b0415e978d81968a"
+        },
+        {
+          "event": "step.created",
+          "step_id": "750cc515576444b6993a8f911b803bbe"
+        },
+        {
+          "event": "step.started",
+          "step_id": "750cc515576444b6993a8f911b803bbe"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "750cc515576444b6993a8f911b803bbe"
+        },
+        {
+          "event": "step.created",
+          "step_id": "15985e6e58ac4f21827368726d32663c"
+        },
+        {
+          "event": "step.started",
+          "step_id": "15985e6e58ac4f21827368726d32663c"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "15985e6e58ac4f21827368726d32663c"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_result-0",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "dddd682f998f4e55b293dec216a319c1"
+        },
+        {
+          "event": "step.started",
+          "step_id": "dddd682f998f4e55b293dec216a319c1"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "dddd682f998f4e55b293dec216a319c1"
+        },
+        {
+          "event": "step.created",
+          "step_id": "c945d733fb794922ade0056c9f80e4f5"
+        },
+        {
+          "event": "step.started",
+          "step_id": "c945d733fb794922ade0056c9f80e4f5"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "c945d733fb794922ade0056c9f80e4f5"
+        },
+        {
+          "event": "step.created",
+          "step_id": "07b0a3df846d48f88ef73fb40a622454"
+        },
+        {
+          "event": "step.started",
+          "step_id": "07b0a3df846d48f88ef73fb40a622454"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "07b0a3df846d48f88ef73fb40a622454"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_accepted_result-4",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "3277d1065f5545b9beefb4f5d8c83c95"
+        },
+        {
+          "event": "step.started",
+          "step_id": "3277d1065f5545b9beefb4f5d8c83c95"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "3277d1065f5545b9beefb4f5d8c83c95"
+        },
+        {
+          "event": "step.created",
+          "step_id": "56ae4b0e37f044ddb67415cc65e4892d"
+        },
+        {
+          "event": "step.started",
+          "step_id": "56ae4b0e37f044ddb67415cc65e4892d"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "56ae4b0e37f044ddb67415cc65e4892d"
+        },
+        {
+          "event": "step.created",
+          "step_id": "dfeb80ed287145a0b25e03451ed1930d"
+        },
+        {
+          "event": "step.started",
+          "step_id": "dfeb80ed287145a0b25e03451ed1930d"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "dfeb80ed287145a0b25e03451ed1930d"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_result-1",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "894096d384fa4dd5832d6126cb05d4fe"
+        },
+        {
+          "event": "step.started",
+          "step_id": "894096d384fa4dd5832d6126cb05d4fe"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "894096d384fa4dd5832d6126cb05d4fe"
+        },
+        {
+          "event": "step.created",
+          "step_id": "beb2c280d678469caddeb9b96f703ab2"
+        },
+        {
+          "event": "step.started",
+          "step_id": "beb2c280d678469caddeb9b96f703ab2"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "beb2c280d678469caddeb9b96f703ab2"
+        },
+        {
+          "event": "step.created",
+          "step_id": "4667f60d2db644908c396271a4f39857"
+        },
+        {
+          "event": "step.started",
+          "step_id": "4667f60d2db644908c396271a4f39857"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "4667f60d2db644908c396271a4f39857"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_effect-2",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "bf364dc683b549cd9ae4af62a5feb937"
+        },
+        {
+          "event": "step.started",
+          "step_id": "bf364dc683b549cd9ae4af62a5feb937"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "bf364dc683b549cd9ae4af62a5feb937"
+        },
+        {
+          "event": "step.created",
+          "step_id": "1c4e082068f8423797778b1afc26b899"
+        },
+        {
+          "event": "step.started",
+          "step_id": "1c4e082068f8423797778b1afc26b899"
+        },
+        {
+          "event": "step.failed",
+          "step_id": "1c4e082068f8423797778b1afc26b899"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_effect-1",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "82319fb269664baf9e72ee6e222c1027"
+        },
+        {
+          "event": "step.started",
+          "step_id": "82319fb269664baf9e72ee6e222c1027"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "82319fb269664baf9e72ee6e222c1027"
+        },
+        {
+          "event": "step.created",
+          "step_id": "f302dd78379243728135390fb7b379e4"
+        },
+        {
+          "event": "step.started",
+          "step_id": "f302dd78379243728135390fb7b379e4"
+        },
+        {
+          "event": "step.failed",
+          "step_id": "f302dd78379243728135390fb7b379e4"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_effect-4",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "b472aa06a87640dfb3fda5ca9b4002d4"
+        },
+        {
+          "event": "step.started",
+          "step_id": "b472aa06a87640dfb3fda5ca9b4002d4"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "b472aa06a87640dfb3fda5ca9b4002d4"
+        },
+        {
+          "event": "step.created",
+          "step_id": "904f641a47144aeb8f36672b83b17eb8"
+        },
+        {
+          "event": "step.started",
+          "step_id": "904f641a47144aeb8f36672b83b17eb8"
+        },
+        {
+          "event": "step.failed",
+          "step_id": "904f641a47144aeb8f36672b83b17eb8"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-normal-3",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "2198c8885be440448b2349b479fcfe36"
+        },
+        {
+          "event": "step.started",
+          "step_id": "2198c8885be440448b2349b479fcfe36"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "2198c8885be440448b2349b479fcfe36"
+        },
+        {
+          "event": "step.created",
+          "step_id": "0cc41bdf34ce4b74a5d56fbde879587d"
+        },
+        {
+          "event": "step.started",
+          "step_id": "0cc41bdf34ce4b74a5d56fbde879587d"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "0cc41bdf34ce4b74a5d56fbde879587d"
+        },
+        {
+          "event": "step.created",
+          "step_id": "35639f129cc64bdfaca4daf0b86e0b54"
+        },
+        {
+          "event": "step.started",
+          "step_id": "35639f129cc64bdfaca4daf0b86e0b54"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "35639f129cc64bdfaca4daf0b86e0b54"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_accepted_result-0",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "50bf4c39341644b48a56316c8646b017"
+        },
+        {
+          "event": "step.started",
+          "step_id": "50bf4c39341644b48a56316c8646b017"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "50bf4c39341644b48a56316c8646b017"
+        },
+        {
+          "event": "step.created",
+          "step_id": "e70cc69196e14028adcd2b53d5f7e400"
+        },
+        {
+          "event": "step.started",
+          "step_id": "e70cc69196e14028adcd2b53d5f7e400"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "e70cc69196e14028adcd2b53d5f7e400"
+        },
+        {
+          "event": "step.created",
+          "step_id": "b40b1cc3f3314c2f89ea32270ea46a8e"
+        },
+        {
+          "event": "step.started",
+          "step_id": "b40b1cc3f3314c2f89ea32270ea46a8e"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "b40b1cc3f3314c2f89ea32270ea46a8e"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_result-4",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "b6c68137ef484739a691dcdc5634a020"
+        },
+        {
+          "event": "step.started",
+          "step_id": "b6c68137ef484739a691dcdc5634a020"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "b6c68137ef484739a691dcdc5634a020"
+        },
+        {
+          "event": "step.created",
+          "step_id": "2bc3f368bb544c9d88c03ca73f2161fb"
+        },
+        {
+          "event": "step.started",
+          "step_id": "2bc3f368bb544c9d88c03ca73f2161fb"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "2bc3f368bb544c9d88c03ca73f2161fb"
+        },
+        {
+          "event": "step.created",
+          "step_id": "8213fa8aa7a34435a90fe657f66e5dce"
+        },
+        {
+          "event": "step.started",
+          "step_id": "8213fa8aa7a34435a90fe657f66e5dce"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "8213fa8aa7a34435a90fe657f66e5dce"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_accepted_result-3",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "53d22026e43a4bd6b484185b1f291f05"
+        },
+        {
+          "event": "step.started",
+          "step_id": "53d22026e43a4bd6b484185b1f291f05"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "53d22026e43a4bd6b484185b1f291f05"
+        },
+        {
+          "event": "step.created",
+          "step_id": "1aa811c920e649e48ba096f530659c12"
+        },
+        {
+          "event": "step.started",
+          "step_id": "1aa811c920e649e48ba096f530659c12"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "1aa811c920e649e48ba096f530659c12"
+        },
+        {
+          "event": "step.created",
+          "step_id": "e8ed4af6d1934322843ca12f4b0bc55a"
+        },
+        {
+          "event": "step.started",
+          "step_id": "e8ed4af6d1934322843ca12f4b0bc55a"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "e8ed4af6d1934322843ca12f4b0bc55a"
+        }
+      ]
+    },
+    {
+      "trial_id": "D_agent-after_effect-0",
+      "missing": [
+        {
+          "event": "step.created",
+          "step_id": "02782993604a46c998eea38426c22027"
+        },
+        {
+          "event": "step.started",
+          "step_id": "02782993604a46c998eea38426c22027"
+        },
+        {
+          "event": "step.completed",
+          "step_id": "02782993604a46c998eea38426c22027"
+        },
+        {
+          "event": "step.created",
+          "step_id": "f2c551408cc94daca613004000371201"
+        },
+        {
+          "event": "step.started",
+          "step_id": "f2c551408cc94daca613004000371201"
+        },
+        {
+          "event": "step.failed",
+          "step_id": "f2c551408cc94daca613004000371201"
+        }
+      ]
+    }
+  ]
+}

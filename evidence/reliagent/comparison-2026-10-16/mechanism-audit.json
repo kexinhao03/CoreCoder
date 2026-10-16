@@ -1,0 +1,8 @@
+{
+  "trials": 1040,
+  "assigned": 1040,
+  "independent_oracle_checked": true,
+  "confirmed_faults": 880,
+  "issues": [],
+  "all_trial_files_hashed": true
+}

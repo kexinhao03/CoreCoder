@@ -12,7 +12,7 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/kexinhao03/CoreCoder/actions/workflows/ci.yml)
-[![engine](https://img.shields.io/badge/engine-1182_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index_EN.md)
+[![engine](https://img.shields.io/badge/engine-1245_LoC-blue)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index_EN.md)
 [![essays](https://img.shields.io/badge/source--reading-8_bilingual-orange)](https://github.com/he-yufeng/CoreCoder/blob/069948d180cb0ceb1a6d7aafeb0e141c166a009d/article/00-index_EN.md)
 
 </div>
@@ -29,11 +29,11 @@ links intentionally continue to point to that source.
 | Area | Delivery boundary and source of truth |
 | --- | --- |
 | Upstream baseline | CoreCoder's original agent, essays, and assets are fixed at upstream commit [`069948d180cb0ceb1a6d7aafeb0e141c166a009d`](https://github.com/he-yufeng/CoreCoder/commit/069948d180cb0ceb1a6d7aafeb0e141c166a009d). The local-only `.gitignore` setup commit is `c45968d527944386015750f98bcd76ef91277576`; the first ReliAgent commit is its child `da7ad0fdcca4e392b2bbc01419fe4cb510a8fec5`. |
-| Runtime | This fork adds the Runtime. The default Agent path wraps `read_file`, `write_file`, `edit_file`, and `bash` through it; other Agent tools are not Runtime-managed. |
-| Recovery CLI | The `reliagent` CLI exposes fixed workflow recovery and reconciliation; it is not an interactive-Agent recovery surface. |
-| Evaluation | Results compare three **Runtime configurations**—`no_retry_no_recovery`, `full`, and `no_recovery`—not an external baseline. |
+| Runtime | The default Agent routes all built-in and MCP tool calls through the Runtime; encrypted messages, original call identities and results support durable continuation. |
+| Recovery CLI | `corecoder --resume-run` restores a durable Agent Run; status and explicit reconciliation are model-free actions. `reliagent` retains fixed-workflow recovery. |
+| Evaluation | [Comparative Eval](docs/evaluation-comparison.md) isolates retry/recovery with A–D and separately compares the real durable Qwen Agent with pristine upstream E. Completion, replay, human reconciliation, latency and overhead are reported separately. |
 | ML workflow | One deterministic local workflow is present. A second workflow remains deferred. |
-| Evidence | [`a7579ac`](evidence/reliagent/a7579ac/) is the current snapshot and evaluates frozen Runtime commit `a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd`: 24/24 ML and 90/90 phase3 scenario contracts passed. Local packaging acceptance covers isolated build, `twine check`, clean-wheel installation, both CLI help entries, and a 24/24 installed-wheel ML evaluation. P1 Metrics/Trace provenance and an external baseline remain deferred. |
+| Evidence | [Comparative experiment report](evidence/reliagent/comparison-2026-10-16/) records samples, denominators, failures and source provenance. Historical [`a7579ac`](evidence/reliagent/a7579ac/) contains 90/90 Runtime and 24/24 workflow **contract checks**, not comparative task-success evidence. |
 
 Please file changes and issues in this fork: [kexinhao03/CoreCoder issues](https://github.com/kexinhao03/CoreCoder/issues).
 
@@ -45,7 +45,7 @@ Please file changes and issues in this fork: [kexinhao03/CoreCoder issues](https
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| Lines of code | ~1,182 engine / 9,215 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
+| Lines of code | ~1,245 engine / 12,222 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
 | Time to read it all | one afternoon | can't (closed) | a few days of slogging | one afternoon |
 | Breakpoint, change, rerun? | yes, every line | no | yes, but there's a lot | yes |
 | What it's for | understand one, then fork your own | production coding assistant | terminal pair-programming | minimal GPT for teaching |
@@ -56,7 +56,7 @@ The nanoGPT column is there as a reference point: minimal, readable, but it teac
 
 I've always felt coding agents get talked about as if they were arcane. Strip a tool like Claude Code or Cursor all the way down and the core is a `while` loop wrapped around a large model, plus seven or eight tools that let it actually do things. The hard part was never the loop; it's everything the loop has to cope with once it meets the real world. CoreCoder is the minimal version that writes that core out honestly.
 
-The engine (loop, model interface, context, tools, sessions) is 1,182 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the current source package is 64 files: 10,311 physical lines, 9,215 net. These values use the `tests/test_core.py` source-of-truth calculation: the engine is `agent.py`, `llm.py`, `context.py`, `session.py`, and `corecoder/tools/*.py`; package totals are all `corecoder/**/*.py` files. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime and ML workflow, each documented below.
+The engine (loop, model interface, context, tools, sessions) is 1,245 lines once you drop blank lines and comments. Counting the outer CLI, config, packaging, and durable runtime too, the current source package is 72 files: 13,649 physical lines, 12,222 net. These values use the `tests/test_core.py` source-of-truth calculation: the engine is `agent.py`, `llm.py`, `context.py`, `session.py`, and `corecoder/tools/*.py`; package totals are all `corecoder/**/*.py` files. The growth since the original 1,161-line snapshot went into visible features: plan mode, hooks, checkpoints, and the ReliAgent runtime and ML workflow, each documented below.
 
 And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. Anything that would mutate your disk or run a command stops for your consent first. The current full-suite result is recorded with the checked-in Runtime evidence instead of freezing a count in this overview; one live-model integration test is opt-in. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
@@ -299,16 +299,14 @@ For a portfolio-oriented walkthrough, use the [3–5 minute demo](docs/reliagent
 sh scripts/reliagent_ml_demo.sh
 ```
 
-See the [architecture and state machines](docs/reliagent/architecture.md),
-[resume-claim boundary](docs/reliagent/resume-evidence.md), and current
-[`a7579ac` evidence](evidence/reliagent/a7579ac/). It evaluates frozen Runtime
-commit `a7579ac10aae3bf68fe8fb8ace96c6e4c2e4d6fd` and records exact commands,
-24/24 ML and 90/90 phase3 scenario-contract passes, file hashes, and test
-results. Local packaging acceptance covers isolated build,
-`twine check`, clean-wheel installation, both CLI help entries, and a 24/24
-installed-wheel ML evaluation. P1
-Metrics/Trace provenance and an external baseline comparison remain deferred,
-with no strict-v2 completion claim.
+See the [architecture and state machines](docs/reliagent/architecture.md) and
+[resume-claim boundary](docs/reliagent/resume-evidence.md) for the fixed-workflow
+background. Historical [`a7579ac` evidence](evidence/reliagent/a7579ac/) records
+24/24 ML and 90/90 Runtime contract checks. The current
+[comparative report](evidence/reliagent/comparison-2026-10-16/) separately records
+1,040 A–D mechanism trials and 35 real-Qwen Agent trials against pristine
+upstream E, including failures, human reconciliation, costs and audit limitations.
+These controlled results do not establish a universal exactly-once guarantee.
 
 ```mermaid
 flowchart LR
