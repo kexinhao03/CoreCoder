@@ -79,7 +79,7 @@ class BashTool(Tool):
                 errors="replace",
                 timeout=timeout,
                 cwd=cwd,
-                env={k: v for k, v in os.environ.items() if k != "RELIAGENT_CHECKPOINT_KEY"},
+                env={k: v for k, v in os.environ.items() if k.upper() != "RELIAGENT_CHECKPOINT_KEY"},
             )
 
             # track cd commands so next command runs in the right place

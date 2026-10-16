@@ -184,6 +184,20 @@ class DurableAgentSession(AgentRuntimeSession):
         metadata["operations"] = configuration_fingerprint(agent)
         return json.loads(json.dumps(metadata, sort_keys=True))
 
+    def preflight(self):
+        """Own and authenticate recovery state before discovering external tools."""
+        if not self._owned:
+            self._lease.acquire()
+            self._owned = True
+        try:
+            self._require_owner()
+            if not self._new:
+                self.journal.load(self.run_id)
+                self.journal.list_invocations(self.run_id)
+        except BaseException:
+            self.close()
+            raise
+
     def attach(self, agent):
         from copy import deepcopy
 
@@ -192,8 +206,7 @@ class DurableAgentSession(AgentRuntimeSession):
             return self
         if self._agent is not None:
             raise ValueError("session already has an attached Agent")
-        self._lease.acquire()
-        self._owned = True
+        self.preflight()
         try:
             self._require_owner()
             if agent.llm.model != self.store.get_run(self.run_id).model:

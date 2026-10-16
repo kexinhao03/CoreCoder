@@ -62,7 +62,7 @@ def test_cached_call_is_not_reexecuted(restored_agent, counter):
     assert restored_agent.messages[2]["tool_call_id"] == "provider-A"
 ```
 - [ ] Dispatch every registered/unknown tool through journal identity; approval and plan/validation failures persisted.
-- [ ] Extend executor with controlled invocation/raw-argument context and terminal result token; preserve workflow behavior when no invocation.
+- [ ] Extend executor with controlled invocation/raw-argument context and terminal result token; preserve workflow behavior when no invocation. Authenticated result state updates may carry todo/cwd in the same terminal transaction; extend Journal narrowly with tests if needed.
 - [ ] On resume: completed→cache; queued→same identity; started/unknown→block; llm_inflight→explicit retry authorization; no new input bypass.
 - [ ] Restore todo/cwd/plan and validate model/tool/policy signature before continuing. Guard same-host Run ownership.
 - [ ] Verify response rollback zero-execution, crash windows and multi-call batch blocking.

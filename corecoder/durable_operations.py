@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .permissions import Permission
 from .runtime.executor import UnknownEffect
-from .runtime.state import InvalidTransition, RunStatus
+from .runtime.state import InvalidTransition, RunStatus, ToolCallStatus
 from .tools import builtin_tools
 from .tools.base import Tool
 from .tools.bash import BashTool
@@ -282,10 +282,39 @@ class DurableOperations:
     def gate(self, agent):
         self._admit()
         invocations = {item["id"]: item for item in self.session.journal.list_invocations(self.session.run_id)}
-        for link in self._links():
+        links = self._links()
+        completed_hooks = set()
+        # Validate every existing effect before admitting any pending post-hook.
+        for link in links:
+            with self.session.store._connect() as connection:
+                initialized = connection.execute("SELECT 1 FROM agent_sessions WHERE run_id = ?", (link["run_id"],)).fetchone()
+            if not initialized:
+                if link["kind"] == "child":
+                    raise ValueError("unfinished linked child blocks execution")
+                continue  # Reserved hook identity has not admitted an effect.
+            checkpoint = self.session.journal.load(link["run_id"])
+            calls = self.session.journal.list_invocations(link["run_id"])
+            if link["kind"] == "child":
+                if (checkpoint["phase"] != "complete"
+                        or self.session.store.get_run(link["run_id"]).status is not RunStatus.SUCCEEDED
+                        or any(call["state"] != "completed" for call in calls)):
+                    raise ValueError("unknown or unfinished linked child blocks execution")
+            elif checkpoint["phase"] == "blocked" or any(
+                call["state"] != "completed" and call["attempt_id"]
+                and self.session.store.get_tool_call(call["attempt_id"]).status not in {
+                    ToolCallStatus.CREATED, ToolCallStatus.WAITING_APPROVAL,
+                } for call in calls
+            ):
+                self._hook(link, invocations[link["invocation_id"]])  # Own and mark a restored running attempt interrupted.
+                raise ValueError("unknown linked hook blocks execution")
+            elif calls and all(call["state"] == "completed" for call in calls):
+                completed_hooks.add(link["run_id"])
+        for link in links:
             invocation = invocations[link["invocation_id"]]
-            if link["kind"] == "post" and invocation["state"] == "completed":
+            if ((link["kind"] == "post" and invocation["state"] == "completed")
+                    or (link["kind"] == "pre" and link["run_id"] in completed_hooks)):
                 self._hook(link, invocation)
+
 
 
 def configuration_fingerprint(agent):

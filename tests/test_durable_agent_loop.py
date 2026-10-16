@@ -181,13 +181,13 @@ for line in sys.stdin:
     else:
         Path(sys.argv[1]).open("a").write("1")
         if req["params"]["arguments"].get("crash"): os._exit(9)
-        result = {"content": [{"type": "text", "text": os.environ.get("RELIAGENT_CHECKPOINT_KEY", "unset")}]}
+        result = {"content": [{"type": "text", "text": next((v for k, v in os.environ.items() if k.upper() == "RELIAGENT_CHECKPOINT_KEY"), "unset")}]}
     print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": result}), flush=True)
 ''')
     clients = []
-    def connect():
+    def connect(env=None):
         client = MCPClient("local", sys.executable, [str(script), str(tmp_path / "remote-marker")],
-                           {"RELIAGENT_CHECKPOINT_KEY": "config-override"})
+                           env if env is not None else {"RELIAGENT_CHECKPOINT_KEY": "config-override"})
         clients.append(client)
         return client
     yield connect
@@ -559,5 +559,146 @@ def test_parent_cancellation_terminates_active_post_hook(tmp_path, monkeypatch):
         assert not late.exists()
         assert (tmp_path / "target").read_text() == "done"
         assert len(agent.llm.requests) == 1
+    finally:
+        session.close()
+
+
+def test_unknown_pre_hook_blocks_after_main_retry_denied(tmp_path, monkeypatch):
+    from corecoder.hooks import Hooks
+    from corecoder.runtime import ApprovalDecision, RunStatus, ToolCallStatus
+    from corecoder.runtime.executor import UnknownEffect
+
+    key = Fernet.generate_key()
+    _unused, initial = build(tmp_path, monkeypatch, [], key=key)
+    initial.close()
+    marker, target, post_marker = tmp_path / "pre-marker", tmp_path / "target", tmp_path / "post-marker"
+    monkeypatch.setattr("corecoder.cli.load_hooks", lambda: Hooks([{"matcher": "write_file", "command": append_marker(marker)}], [{"matcher": "write_file", "command": append_marker(post_marker)}]))
+    agent, session = _build_agent(ScriptedLLM([call("write_file", {"file_path": str(target), "content": "never"})]), Config(model="integration-model"), Permission(allow_all=True), runtime_workspace=tmp_path, runtime_enabled=True)
+    run_id = session.run_id
+    with session.store._connect() as connection:
+        connection.execute(f"CREATE TRIGGER lose_pre_result BEFORE UPDATE OF status ON tool_calls WHEN NEW.run_id != '{run_id}' AND NEW.status = 'succeeded' BEGIN SELECT RAISE(ABORT, 'lost pre result'); END")
+    with pytest.raises(UnknownEffect):
+        agent.chat("go")
+    assert marker.read_text() == "x" and not target.exists()
+    with session.store._connect() as connection:
+        connection.execute("DROP TRIGGER lose_pre_result")
+    main = session.journal.list_invocations(run_id)[0]
+    session.journal.reconcile(main["id"], "confirmed_not_executed", evidence={"target": "absent; pre hook prevented main dispatch"})
+    retry = session.journal.list_invocations(run_id)[0]
+    approval = session.store.get_approval_for_tool_call(retry["attempt_id"])
+    # A fresh explicit Runtime denial settles only the main invocation.
+    session.store.resolve_approval(approval.id, ApprovalDecision.DENY,
+                                   agent_result=session.journal.result_token(main["id"], "Permission denied"))
+    session.close()
+    restored, session = _build_agent(ScriptedLLM([LLMResponse(content="done")]), Config(model="integration-model"), Permission(), runtime_workspace=tmp_path, runtime_enabled=True, resume_run=run_id)
+    try:
+        for action in (restored.resume, lambda: restored.chat("bypass"), restored.reset, session.export):
+            with pytest.raises(ValueError, match="unknown"):
+                action()
+        assert restored.llm.requests == []
+        assert not post_marker.exists()
+        assert session.finish(RunStatus.SUCCEEDED).status is RunStatus.RUNNING
+        restored, session = _build_agent(ScriptedLLM([LLMResponse(content="done")]), Config(model="integration-model"), Permission(), runtime_workspace=tmp_path, runtime_enabled=True, resume_run=run_id)
+        link = next(link for link in session.journal.load(run_id)["state"]["linked_operations"].values() if link["kind"] == "pre")
+        hook = session.journal.list_invocations(link["run_id"])[0]
+        if session.store.get_tool_call(hook["attempt_id"]).status is ToolCallStatus.RUNNING:
+            session.store.transition_tool_call(hook["attempt_id"], ToolCallStatus.INTERRUPTED, "tool.interrupted")
+        session.journal.reconcile(hook["id"], "confirmed_completed", output="", evidence={"marker": "checked exactly one append"})
+        assert restored.resume() == "done"
+        assert marker.read_text() == "x" and not target.exists()
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("damage", ["wrong_key", "context", "arguments"])
+def test_resume_authenticates_before_mcp_start(tmp_path, monkeypatch, damage):
+    key = Fernet.generate_key()
+    agent, session = build(tmp_path, monkeypatch, [call("todo_write", {"tasks": []}), LLMResponse(content="done")], key=key)
+    agent.chat("go")
+    run_id = session.run_id
+    session.close()
+    if damage == "wrong_key":
+        monkeypatch.setenv("RELIAGENT_CHECKPOINT_KEY", Fernet.generate_key().decode())
+    else:
+        table, column = ("agent_sessions", "context_ciphertext") if damage == "context" else ("agent_invocations", "arguments_ciphertext")
+        with session.store._connect() as connection:
+            connection.execute(f"UPDATE {table} SET {column} = ? WHERE run_id = ?", (b"damaged", run_id))
+    started = []
+    monkeypatch.setattr("corecoder.cli.load_mcp_tools", lambda: started.append(True) or [])
+    with pytest.raises(ValueError, match="authentication"):
+        _build_agent(ScriptedLLM([]), Config(model="integration-model"), Permission(), runtime_workspace=tmp_path, runtime_enabled=True, resume_run=run_id)
+    assert started == []
+    from corecoder.runtime.agent_store import RunLease
+    with RunLease(tmp_path, run_id):
+        pass  # failed preflight released ownership
+
+
+def test_mixed_case_checkpoint_keys_filtered_in_every_subprocess(tmp_path, monkeypatch, local_mcp):
+    import threading
+
+    from corecoder.hooks import Hooks
+    from corecoder.runtime.processes import ManagedProcessRunner, ProcessSpec
+    from corecoder.tools.bash import BashTool
+
+    inspect_env = "import os; print(','.join(k for k in os.environ if k.upper() == 'RELIAGENT_CHECKPOINT_KEY'), end='')"
+    env = {"reliagent_checkpoint_key": "lower", "ReliAgent_Checkpoint_Key": "mixed", "KEPT_VALUE": "kept"}
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    result = ManagedProcessRunner().run(ProcessSpec((sys.executable, "-c", inspect_env + "; print(os.environ['KEPT_VALUE'], end='')"), tmp_path, 2, 100, .1, env), threading.Event())
+    assert result.stdout == "kept"
+    assert BashTool().execute(python_command(inspect_env)) == "(no output)"
+    marker = tmp_path / "env-hook"
+    hook_code = f"import os; from pathlib import Path; Path({str(marker)!r}).write_text(','.join(k for k in os.environ if k.upper() == 'RELIAGENT_CHECKPOINT_KEY') + os.environ['KEPT_VALUE'])"
+    Hooks([{"matcher": "*", "command": python_command(hook_code)}], []).run_pre("write_file", {})
+    assert marker.read_text() == "kept"
+    client = local_mcp(env)
+    assert client.call_tool("action", {}) == "unset"
+    clean_client = local_mcp({"KEPT_VALUE": "kept"})
+    assert client.binding_digest == clean_client.binding_digest
+
+
+def test_unsettled_child_blocks_independently_of_main_reconciliation(tmp_path, monkeypatch):
+    from corecoder.runtime import RunStatus
+    from corecoder.runtime.executor import UnknownEffect
+
+    key = Fernet.generate_key()
+    agent, session = build(tmp_path, monkeypatch, [call("agent", {"task": "child"}), RuntimeError("child inference lost")], key=key)
+    with pytest.raises(UnknownEffect):
+        agent.chat("go")
+    parent = session.journal.list_invocations(session.run_id)[0]
+    session.journal.reconcile(parent["id"], "confirmed_completed", output="operator parent result", evidence={"parent": "inspected"})
+    run_id = session.run_id
+    session.close()
+    restored, session = build(tmp_path, monkeypatch, [], key=key, run_id=run_id)
+    try:
+        for action in (restored.resume, lambda: restored.chat("bypass"), restored.reset, session.export):
+            with pytest.raises(ValueError, match="linked child"):
+                action()
+        assert restored.llm.requests == []
+        assert session.finish(RunStatus.SUCCEEDED).status is RunStatus.RUNNING
+    finally:
+        session.close()
+
+
+def test_builder_holds_preflight_lease_and_releases_it_on_loader_failure(tmp_path, monkeypatch):
+    from corecoder.runtime.agent_store import RunLease
+
+    key = Fernet.generate_key()
+    agent, session = build(tmp_path, monkeypatch, [LLMResponse(content="done")], key=key)
+    agent.chat("go")
+    run_id = session.run_id
+    session.close()
+    def fail_loader():
+        with pytest.raises(ValueError, match="owned"), RunLease(tmp_path, run_id):
+            pass
+        raise RuntimeError("loader failed")
+    monkeypatch.setattr("corecoder.cli.load_mcp_tools", fail_loader)
+    with pytest.raises(RuntimeError, match="loader failed"):
+        _build_agent(ScriptedLLM([]), Config(model="integration-model"), Permission(), runtime_workspace=tmp_path, runtime_enabled=True, resume_run=run_id)
+    with RunLease(tmp_path, run_id):
+        pass
+    restored, session = build(tmp_path, monkeypatch, [], key=key, run_id=run_id)
+    try:
+        assert restored.resume() == "done"
     finally:
         session.close()

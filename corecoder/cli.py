@@ -71,24 +71,31 @@ def _build_agent(
             runtime_workspace or Path.cwd(), config.model, permission,
             key=os.environ.get("RELIAGENT_CHECKPOINT_KEY"), run_id=resume_run,
         )
-    tools = [*builtin_tools(), *load_mcp_tools()]
-    hooks = load_hooks()
-    agent = Agent(
-        llm=llm,
-        tools=tools,
-        max_context_tokens=config.max_context_tokens,
-        permission=permission,
-        hooks=hooks,
-    )
-    if initial_messages:
-        from copy import deepcopy
-        agent.messages = deepcopy(initial_messages)
-    if session is not None:
-        from .durable_operations import DurableOperations
-        agent.runtime_session = session
-        agent.durable_operations = DurableOperations(session, agent)
-        session.attach(agent)
-    return agent, session
+    try:
+        if session is not None:
+            session.preflight()
+        tools = [*builtin_tools(), *load_mcp_tools()]
+        hooks = load_hooks()
+        agent = Agent(
+            llm=llm,
+            tools=tools,
+            max_context_tokens=config.max_context_tokens,
+            permission=permission,
+            hooks=hooks,
+        )
+        if initial_messages:
+            from copy import deepcopy
+            agent.messages = deepcopy(initial_messages)
+        if session is not None:
+            from .durable_operations import DurableOperations
+            agent.runtime_session = session
+            agent.durable_operations = DurableOperations(session, agent)
+            session.attach(agent)
+        return agent, session
+    except BaseException:
+        if session is not None:
+            session.close()
+        raise
 
 
 def _runtime_action(args):

@@ -96,7 +96,7 @@ class ManagedProcessRunner:
             json.dumps(spec.argv, separators=(",", ":")).encode()
         ).hexdigest()
         environment = dict(os.environ if spec.environment is None else spec.environment)
-        environment.pop("RELIAGENT_CHECKPOINT_KEY", None)
+        environment = {k: v for k, v in environment.items() if k.upper() != "RELIAGENT_CHECKPOINT_KEY"}
         environment["RELIAGENT_PROCESS_TOKEN"] = process_token
         try:
             process = subprocess.Popen(

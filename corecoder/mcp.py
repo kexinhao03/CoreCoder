@@ -53,9 +53,9 @@ class MCPClient:
         self.name = name
         self.call_timeout = CALL_TIMEOUT
         environment = {**os.environ, **(env or {})}
-        environment.pop("RELIAGENT_CHECKPOINT_KEY", None)
+        environment = {k: v for k, v in environment.items() if k.upper() != "RELIAGENT_CHECKPOINT_KEY"}
         binding = {"command": command, "args": list(args),
-                   "env": {k: v for k, v in (env or {}).items() if k != "RELIAGENT_CHECKPOINT_KEY"}}
+                   "env": {k: v for k, v in (env or {}).items() if k.upper() != "RELIAGENT_CHECKPOINT_KEY"}}
         self.binding_digest = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
         self._proc = subprocess.Popen(
             [command, *args],
