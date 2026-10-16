@@ -140,8 +140,10 @@ def test_managed_process_never_inherits_checkpoint_key(tmp_path, monkeypatch):
 
     from corecoder.runtime.processes import ManagedProcessRunner, ProcessSpec
     monkeypatch.setenv("RELIAGENT_CHECKPOINT_KEY", "secret")
-    for env in (None, {"RELIAGENT_CHECKPOINT_KEY": "override"}):
+    platform_env = {k: v for k, v in os.environ.items() if k.upper() == "SYSTEMROOT"}
+    for env in (None, {**platform_env, "RELIAGENT_CHECKPOINT_KEY": "override"}):
         result = ManagedProcessRunner().run(ProcessSpec((sys.executable, "-c", "import os; print(os.environ.get('RELIAGENT_CHECKPOINT_KEY', 'unset'), end='')"), tmp_path, 2, 100, .1, env), threading.Event())
+        assert result.exit_code == 0, (result.failure_kind, result.stderr)
         assert result.stdout == "unset"
 
 
@@ -645,7 +647,9 @@ def test_mixed_case_checkpoint_keys_filtered_in_every_subprocess(tmp_path, monke
     env = {"reliagent_checkpoint_key": "lower", "ReliAgent_Checkpoint_Key": "mixed", "KEPT_VALUE": "kept"}
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    result = ManagedProcessRunner().run(ProcessSpec((sys.executable, "-c", inspect_env + "; print(os.environ['KEPT_VALUE'], end='')"), tmp_path, 2, 100, .1, env), threading.Event())
+    platform_env = {k: v for k, v in os.environ.items() if k.upper() == "SYSTEMROOT"}
+    result = ManagedProcessRunner().run(ProcessSpec((sys.executable, "-c", inspect_env + "; print(os.environ['KEPT_VALUE'], end='')"), tmp_path, 2, 100, .1, {**platform_env, **env}), threading.Event())
+    assert result.exit_code == 0, (result.failure_kind, result.stderr)
     assert result.stdout == "kept"
     assert BashTool().execute(python_command(inspect_env)) == "(no output)"
     marker = tmp_path / "env-hook"
