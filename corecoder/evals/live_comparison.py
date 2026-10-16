@@ -65,7 +65,7 @@ def prepare_sources(path: Path) -> dict:
     shutil.copytree(ROOT / 'corecoder', current / 'corecoder', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     upstream = path / 'upstream'
     upstream.mkdir()
-    archive = subprocess.check_output(['git', 'archive', UPSTREAM], cwd=ROOT)
+    archive = subprocess.check_output(['git', '-c', 'core.autocrlf=false', 'archive', UPSTREAM], cwd=ROOT)
     with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
         # Only this pinned local Git tree is accepted; older Python lacks filters.
         tree.extractall(upstream, **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))
