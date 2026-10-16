@@ -67,7 +67,8 @@ def prepare_sources(path: Path) -> dict:
     upstream.mkdir()
     archive = subprocess.check_output(['git', 'archive', UPSTREAM], cwd=ROOT)
     with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
-        tree.extractall(upstream, filter='data')
+        # Only this pinned local Git tree is accepted; older Python lacks filters.
+        tree.extractall(upstream, **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))
     result = {}
     for name, source in [('D_agent', current), ('E', upstream)]:
         result[name] = {'path': str(source.resolve()),

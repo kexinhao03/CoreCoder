@@ -533,6 +533,7 @@ def test_post_hook_recovers_pre_dispatch_crash_without_model(tmp_path, monkeypat
         session.close()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="descendant termination guarantee requires POSIX process groups; Windows is best-effort")
 def test_parent_cancellation_terminates_active_post_hook(tmp_path, monkeypatch):
     import time
     from concurrent.futures import ThreadPoolExecutor

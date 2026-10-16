@@ -31,6 +31,20 @@ def sources(tmp_path):
     return api().prepare_sources(tmp_path / 'sources')
 
 
+def test_pinned_upstream_archive_supports_python_without_tar_filter(tmp_path, monkeypatch):
+    import tarfile
+
+    original = tarfile.TarFile.extractall
+
+    def legacy_extractall(self, path):
+        return original(self, path)
+
+    monkeypatch.delattr(tarfile, 'data_filter', raising=False)
+    monkeypatch.setattr(tarfile.TarFile, 'extractall', legacy_extractall)
+    sources = api().prepare_sources(tmp_path / 'sources')
+    assert (Path(sources['E']['path']) / 'corecoder/agent.py').is_file()
+
+
 def test_worker_imports_pristine_upstream_even_with_current_modules_preloaded(sources, tmp_path):
     importlib.import_module("corecoder.agent")
     module = api()

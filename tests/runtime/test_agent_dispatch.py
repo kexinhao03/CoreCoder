@@ -1,6 +1,10 @@
 """Real Agent dispatch through encrypted Runtime boundaries (provider double only)."""
 
+import os
+import shlex
 import sqlite3
+import subprocess
+import sys
 from copy import deepcopy
 from typing import ClassVar
 
@@ -152,7 +156,9 @@ def test_lost_inference_needs_explicit_authorization(tmp_path):
 
 
 def test_bash_uses_original_arguments_and_persists_full_formatted_output(tmp_path):
-    model = CountingLLM([response("bash", {"command": "printf error; exit 7"}), LLMResponse(content="done")])
+    argv = [sys.executable, "-c", "import sys; sys.stdout.write('error'); sys.exit(7)"]
+    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    model = CountingLLM([response("bash", {"command": command}), LLMResponse(content="done")])
     agent = Agent(model, tools=[BashTool()])
     session = open_session(tmp_path, Fernet.generate_key())
     session.attach(agent)
