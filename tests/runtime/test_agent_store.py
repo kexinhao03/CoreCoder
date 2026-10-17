@@ -634,3 +634,119 @@ def test_legacy_workflow_retry_cannot_reserve_journal_attempt(journal):
     with pytest.raises(ValueError, match="journal"):
         store.approve_workflow_retry(call.id, {"reference": "legacy decision"})
     assert (store.get_run("run"), store.list_tool_calls("run"), store.list_events("run")) == before
+
+
+@pytest.mark.parametrize('status,event,tool_event', [
+    (ToolCallStatus.SUCCEEDED, 'step.completed', 'tool.completed'),
+    (ToolCallStatus.FAILED, 'step.failed', 'tool.failed'),
+    (ToolCallStatus.TIMED_OUT, 'step.failed', 'tool.timed_out'),
+    (ToolCallStatus.CANCELLED, 'step.cancelled', 'tool.cancelled'),
+])
+def test_agent_step_lifecycle_is_auditable(journal, status, event, tool_event):
+    from corecoder.runtime.tracing import TraceService
+
+    invocation = queue(journal)
+    call = bind(journal, invocation)
+    journal.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, 'tool.started')
+    journal.store.transition_tool_call(call.id, status, tool_event,
+                                      agent_result=journal.result_token(invocation['id'], 'result'))
+    trace = TraceService(journal.store).export_run('run')
+    assert [e['type'] for e in trace['events'] if e['type'].startswith('step.')] == [
+        'step.created', 'step.started', event,
+    ]
+    assert trace['integrity'] == {'sequence_contiguous': True, 'missing': []}
+    before = journal.store.list_events('run')
+    with pytest.raises(ValueError):
+        journal.store.transition_tool_call(call.id, status, tool_event,
+                                          agent_result=journal.result_token(invocation['id'], 'result'))
+    assert journal.store.list_events('run') == before
+
+
+@pytest.mark.parametrize('failure', ['event', 'ignored_event', 'state'])
+def test_agent_step_completion_failure_rolls_back_result_and_state(journal, failure):
+    invocation = queue(journal)
+    call = bind(journal, invocation)
+    journal.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, 'tool.started')
+    before = (journal.store.list_events('run'), journal.load('run'))
+    with journal.store._connect() as db:
+        if failure == 'event':
+            db.execute("CREATE TRIGGER reject_step BEFORE INSERT ON events WHEN NEW.type = 'step.completed' BEGIN SELECT RAISE(ABORT, 'step event failed'); END")
+        elif failure == 'ignored_event':
+            db.execute("CREATE TRIGGER reject_step BEFORE INSERT ON events WHEN NEW.type = 'step.completed' BEGIN SELECT RAISE(IGNORE); END")
+        else:
+            db.execute("CREATE TRIGGER reject_step BEFORE UPDATE OF status ON steps WHEN NEW.status = 'succeeded' BEGIN SELECT RAISE(IGNORE); END")
+    with pytest.raises((ValueError, sqlite3.IntegrityError)):
+        journal.store.transition_tool_call(call.id, ToolCallStatus.SUCCEEDED, 'tool.completed',
+                                          agent_result=journal.result_token(invocation['id'], 'result'))
+    assert journal.store.get_tool_call(call.id).status is ToolCallStatus.RUNNING
+    assert journal.store.list_steps('run')[0].status is StepStatus.RUNNING
+    assert journal.list_invocations('run')[0]['result'] is None
+    assert (journal.store.list_events('run'), journal.load('run')) == before
+
+
+def test_unknown_step_stays_unsettled_until_current_reconciliation(journal, monkeypatch):
+    invocation = queue(journal)
+    call = bind(journal, invocation)
+    journal.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, 'tool.started')
+    journal.store.transition_tool_call(call.id, ToolCallStatus.INTERRUPTED, 'tool.interrupted')
+    assert journal.store.list_steps('run')[0].status is StepStatus.RUNNING
+    before = journal.store.list_events('run')
+    assert not any(e.type in {'step.completed', 'step.failed'} for e in before)
+    assert journal.load('run')['phase'] == 'blocked'
+    monkeypatch.setattr('corecoder.runtime.agent_store._now', lambda: '2099-01-01T00:00:00+00:00')
+    journal.reconcile(invocation['id'], 'confirmed_completed', output='verified', evidence={'check': 'external receipt'})
+    [completed] = [e for e in journal.store.list_events('run') if e.type == 'step.completed']
+    assert completed.created_at == '2099-01-01T00:00:00+00:00'
+    assert completed.payload['source'] == 'reconciliation'
+    assert completed.sequence > before[-1].sequence
+
+
+@pytest.mark.parametrize('failure', ['event', 'ignored_event', 'state'])
+def test_agent_step_creation_failure_cannot_bind_an_attempt(journal, failure):
+    invocation = queue(journal)
+    before = journal.store.list_events('run')
+    with journal.store._connect() as db:
+        if failure == 'event':
+            db.execute("CREATE TRIGGER reject_step BEFORE INSERT ON events WHEN NEW.type = 'step.created' BEGIN SELECT RAISE(ABORT, 'step creation failed'); END")
+        elif failure == 'ignored_event':
+            db.execute("CREATE TRIGGER reject_step BEFORE INSERT ON events WHEN NEW.type = 'step.created' BEGIN SELECT RAISE(IGNORE); END")
+        else:
+            db.execute("CREATE TRIGGER reject_step BEFORE INSERT ON steps BEGIN SELECT RAISE(IGNORE); END")
+    with pytest.raises((ValueError, sqlite3.IntegrityError)):
+        bind(journal, invocation)
+    assert journal.store.list_steps('run') == []
+    assert journal.store.list_tool_calls('run') == []
+    assert journal.list_invocations('run')[0]['state'] == 'queued'
+    assert journal.store.list_events('run') == before
+
+
+def test_approval_and_reconciled_retry_record_actual_step_transitions(journal):
+    from corecoder.runtime.approvals import ApprovalDecision
+
+    invocation = queue(journal)
+    call = bind(journal, invocation)
+    approval = journal.store.request_approval(call.id, arguments_summary='safe', workspace='.', risk_reason='mutating')
+    journal.store.resolve_approval(approval.id, ApprovalDecision.ALLOW_ONCE)
+    journal.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, 'tool.started')
+    journal.store.transition_tool_call(call.id, ToolCallStatus.INTERRUPTED, 'tool.interrupted')
+    journal.reconcile(invocation['id'], 'confirmed_not_executed', evidence={'external': 'verified no effect'})
+    steps = [e for e in journal.store.list_events('run') if e.type.startswith('step.')]
+    assert [e.type for e in steps] == [
+        'step.created', 'step.started', 'step.waiting_approval', 'step.resumed', 'step.waiting_approval',
+    ]
+    assert steps[-1].payload['source'] == 'reconciliation'
+    assert journal.store.list_steps('run')[0].attempt_count == 2
+
+
+def test_legacy_terminal_step_is_not_revived_or_backfilled(journal):
+    invocation = queue(journal)
+    call = bind(journal, invocation)
+    journal.store.transition_tool_call(call.id, ToolCallStatus.RUNNING, 'tool.started')
+    journal.store.transition_tool_call(call.id, ToolCallStatus.INTERRUPTED, 'tool.interrupted')
+    with journal.store._connect() as db:
+        db.execute("UPDATE steps SET status = 'failed' WHERE id = ?", (call.step_id,))
+    before = journal.store.list_events('run')
+    with pytest.raises(ValueError):
+        journal.reconcile(invocation['id'], 'confirmed_completed', output='verified', evidence={'external': 'receipt'})
+    assert journal.store.list_events('run') == before
+    assert journal.list_invocations('run')[0]['result'] is None

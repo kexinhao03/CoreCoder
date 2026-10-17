@@ -222,3 +222,9 @@ Post hook 的失败不撤销已完成工具结果，也不导致工具重执行�
 实施顺序：加密日志与事务身份 → 现有 Loop 的提交边界和 resume gates →
 全工具/子 Agent/MCP/hook 接入 → CLI 人工核对 → 故障注入与真实供应商验收 → CI。
 每一阶段先有失败测试，再实现；已有编程链路 Windows 引号错误单独修复，不混入本设计提交。
+
+## Trace 数据来源与 Step 审计（2026-10-17 修订）
+
+Trace 由 Event Journal 和持久化状态表共同构成。Event Journal 提供关键生命周期审计历史，状态表提供当前执行状态和实体关联信息。Agent Journal 与 Checkpoint 负责保存 Agent 恢复所需的数据。ReliAgent 不承诺仅通过事件回放重建全部执行状态。
+
+Agent Step 的创建、开始、审批等待/恢复、成功、失败、取消，按既有 Step 状态转换在同一 SQLite 事务中写入对应事件。工具未知结果保留未终结的 Step，由 ToolCall 的 interrupted 与 Run 的 recoverable 表达恢复门禁。对账成功记录的是对账当时发生的 Step 完成转换，不回填崩溃前的完成事件；历史审计缺口保持可见。

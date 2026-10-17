@@ -1334,11 +1334,6 @@ class SQLiteStore:
                 ),
             )
             connection.execute(
-                """UPDATE steps SET status = ?, updated_at = ?, ended_at = ?
-                   WHERE id = ?""",
-                (StepStatus.FAILED.value, timestamp, timestamp, step_row["id"]),
-            )
-            connection.execute(
                 """UPDATE runs SET status = ?, updated_at = ?, ended_at = ?
                    WHERE id = ?""",
                 (RunStatus.FAILED.value, timestamp, timestamp, run_row["id"]),
@@ -1356,13 +1351,14 @@ class SQLiteStore:
                     "tool.failed",
                     {"tool_call_id": call_row["id"], "error_code": error_code},
                 ),
-                (
-                    "step.failed",
-                    {"step_id": step_row["id"], "error_code": error_code},
-                ),
                 ("run.failed", {"error_code": error_code}),
             )
             for event_type, payload in events:
+                if event_type == "run.failed":
+                    self._transition_step_in_transaction(
+                        connection, step_row["id"], StepStatus.FAILED, timestamp,
+                        payload={"error_code": error_code},
+                    )
                 self._insert_event(
                     connection,
                     run_id=run_row["id"],
@@ -1478,7 +1474,7 @@ class SQLiteStore:
                 definition_hash,
             )
             try:
-                connection.execute(
+                inserted = connection.execute(
                     """
                     INSERT INTO steps (
                         id, run_id, sequence, title, status, attempt_count,
@@ -1508,6 +1504,8 @@ class SQLiteStore:
                 if "steps.run_id, steps.step_key" in str(error):
                     raise ValueError("step key already exists") from error
                 raise
+            if inserted.rowcount != 1:
+                raise ValueError("Step creation did not apply")
             event_payload = {
                 "sequence": sequence,
                 "step_id": step.id,
@@ -1542,19 +1540,9 @@ class SQLiteStore:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT * FROM steps WHERE id = ?", (step_id,)).fetchone()
-            if row is None:
-                raise KeyError(f"step not found: {step_id}")
-            current_status = StepStatus(row["status"])
-            ensure_step_transition(current_status, to_status)
-            started_at = timestamp if to_status is StepStatus.RUNNING and row["started_at"] is None else row["started_at"]
-            ended_at = timestamp if to_status in {StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.CANCELLED} else row["ended_at"]
-            attempt_count = row["attempt_count"] + (
-                current_status is StepStatus.PENDING and to_status is StepStatus.RUNNING
+            updated = self._transition_step_in_transaction(
+                connection, step_id, to_status, timestamp, event_type=event_type
             )
-            connection.execute("UPDATE steps SET status = ?, attempt_count = ?, updated_at = ?, started_at = ?, ended_at = ? WHERE id = ?", (to_status.value, attempt_count, timestamp, started_at, ended_at, step_id))
-            self._insert_event(connection, run_id=row["run_id"], sequence=self._next_event_sequence(connection, row["run_id"]), event_type=event_type, payload={"step_id": step_id}, created_at=timestamp)
-            updated = connection.execute("SELECT * FROM steps WHERE id = ?", (step_id,)).fetchone()
             connection.commit()
         except Exception:
             connection.rollback()
@@ -1562,6 +1550,46 @@ class SQLiteStore:
         finally:
             connection.close()
         return self._step_from_row(updated)
+
+    def _transition_step_in_transaction(
+        self, connection, step_id, to_status, timestamp, *, event_type=None,
+        payload=None, attempt_increment=None,
+    ):
+        row = connection.execute("SELECT * FROM steps WHERE id = ?", (step_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"step not found: {step_id}")
+        current = StepStatus(row["status"])
+        expected = {
+            StepStatus.RUNNING: "step.resumed" if row["started_at"] else "step.started",
+            StepStatus.WAITING_APPROVAL: "step.waiting_approval",
+            StepStatus.SUCCEEDED: "step.completed",
+            StepStatus.FAILED: "step.failed",
+            StepStatus.CANCELLED: "step.cancelled",
+            StepStatus.SKIPPED: "step.skipped",
+        }.get(to_status)
+        if expected is None or (event_type is not None and event_type != expected):
+            raise ValueError("Step event does not match its state transition")
+        if current is to_status:
+            return row
+        ensure_step_transition(current, to_status)
+        started_at = timestamp if to_status is StepStatus.RUNNING and row["started_at"] is None else row["started_at"]
+        ended_at = timestamp if to_status in {StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.CANCELLED} else row["ended_at"]
+        if attempt_increment is None:
+            attempt_increment = int(current is StepStatus.PENDING and to_status is StepStatus.RUNNING)
+        updated = connection.execute(
+            """UPDATE steps SET status = ?, attempt_count = attempt_count + ?,
+            updated_at = ?, started_at = ?, ended_at = ? WHERE id = ? AND status = ?""",
+            (to_status.value, attempt_increment, timestamp, started_at, ended_at, step_id, current.value),
+        )
+        if updated.rowcount != 1:
+            raise ValueError("Step state update did not apply")
+        self._insert_event(
+            connection, run_id=row["run_id"], sequence=self._next_event_sequence(connection, row["run_id"]),
+            event_type=expected, payload={**(payload or {}), "step_id": step_id,
+                                          "from_status": current.value, "to_status": to_status.value},
+            created_at=timestamp,
+        )
+        return connection.execute("SELECT * FROM steps WHERE id = ?", (step_id,)).fetchone()
 
     def transition_tool_call(
         self,
@@ -2066,19 +2094,9 @@ class SQLiteStore:
                 payload={"decision": "completed", "tool_call_id": call.id},
                 created_at=timestamp,
             )
-            connection.execute(
-                """
-                UPDATE steps SET status = ?, updated_at = ?, ended_at = ? WHERE id = ?
-                """,
-                (StepStatus.SUCCEEDED.value, timestamp, timestamp, step["id"]),
-            )
-            self._insert_event(
-                connection,
-                run_id=run.id,
-                sequence=self._next_event_sequence(connection, run.id),
-                event_type="step.completed",
-                payload={"step_id": step["id"]},
-                created_at=timestamp,
+            self._transition_step_in_transaction(
+                connection, step["id"], StepStatus.SUCCEEDED, timestamp,
+                payload={"source": "reconciliation", "tool_call_id": call.id},
             )
             connection.execute(
                 "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
@@ -2197,12 +2215,9 @@ class SQLiteStore:
                     original_approval["definition_hash"],
                 ),
             )
-            connection.execute(
-                """
-                UPDATE steps SET status = ?, attempt_count = attempt_count + 1,
-                    updated_at = ? WHERE id = ?
-                """,
-                (StepStatus.WAITING_APPROVAL.value, timestamp, step["id"]),
+            self._transition_step_in_transaction(
+                connection, step["id"], StepStatus.WAITING_APPROVAL, timestamp, attempt_increment=1,
+                payload={"source": "reconciliation", "tool_call_id": retry_id},
             )
             connection.execute(
                 "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
@@ -2351,7 +2366,7 @@ class SQLiteStore:
         payload: dict,
         created_at: str,
     ) -> None:
-        connection.execute(
+        inserted = connection.execute(
             """
             INSERT INTO events (
                 run_id, sequence, type, payload_json, created_at
@@ -2365,6 +2380,9 @@ class SQLiteStore:
                 created_at,
             ),
         )
+
+        if inserted.rowcount != 1:
+            raise ValueError("Event insertion did not apply")
 
     @staticmethod
     def _approval_from_row(row: sqlite3.Row) -> ApprovalRecord:

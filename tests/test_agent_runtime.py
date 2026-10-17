@@ -451,7 +451,7 @@ def test_one_shot_mutating_system_exit_preserves_recovery_and_effect_once(
         store, ToolPolicyRegistry.with_builtin_defaults()
     ).scan(run.id)
     assert run.status is RunStatus.RECOVERABLE
-    assert step.status is StepStatus.FAILED
+    assert step.status is StepStatus.RUNNING
     assert call.status is ToolCallStatus.INTERRUPTED
     assert candidate.kind is RecoveryKind.HUMAN_REQUIRED
     assert candidate.call.id == call.id
@@ -534,6 +534,6 @@ def test_interactive_read_tool_interrupt_blocks_new_input(
     with _database(tmp_path) as db:
         assert db.execute("SELECT status FROM runs").fetchall() == [("recoverable",)]
         assert db.execute("SELECT status FROM tool_calls").fetchall() == [("interrupted",)]
-        assert db.execute("SELECT status FROM steps").fetchall() == [("failed",)]
+        assert db.execute("SELECT status FROM steps").fetchall() == [("running",)]
         assert db.execute("SELECT COUNT(*) FROM agent_turns").fetchone() == (1,)
     assert tool.calls == 1

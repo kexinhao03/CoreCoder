@@ -461,11 +461,18 @@ class AgentJournal:
         sequence = connection.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM steps WHERE run_id = ?", (run_id,)).fetchone()[
             0
         ]
-        connection.execute(
+        inserted = connection.execute(
             """INSERT INTO steps
             (id, run_id, sequence, title, status, attempt_count, created_at, updated_at)
             VALUES (?, ?, ?, ?, 'pending', 1, ?, ?)""",
             (step_id, run_id, sequence, tool_name, timestamp, timestamp),
+        )
+        if inserted.rowcount != 1:
+            raise ValueError("agent Step creation did not apply")
+        self.store._insert_event(
+            connection, run_id=run_id, sequence=self.store._next_event_sequence(connection, run_id),
+            event_type="step.created", payload={"step_id": step_id, "sequence": sequence, "title": tool_name},
+            created_at=timestamp,
         )
         # The attempt foreign key is assigned after its ToolCall row has been inserted.
         return step_id
@@ -497,8 +504,6 @@ class AgentJournal:
             if token is not None:
                 raise ValueError("interrupted effects cannot have a model result")
             connection.execute("UPDATE agent_invocations SET state = 'blocked' WHERE id = ?", (invocation["id"],))
-            connection.execute("UPDATE steps SET status = 'failed', updated_at = ?, ended_at = ? WHERE id = ?",
-                               (timestamp, timestamp, call["step_id"]))
             row, state = self._load(connection, invocation["run_id"])
             state["blocked_reason"] = "tool outcome is unknown"
             self._write_state(connection, row, state, "blocked")
@@ -519,11 +524,15 @@ class AgentJournal:
             ToolCallStatus.CANCELLED: StepStatus.CANCELLED,
         }.get(status)
         if step_status is not None:
-            connection.execute(
-                """UPDATE steps SET status = ?, updated_at = ?,
-                started_at = CASE WHEN ? = 'running' THEN COALESCE(started_at, ?) ELSE started_at END,
-                ended_at = CASE WHEN ? THEN ? ELSE ended_at END WHERE id = ?""",
-                (step_status.value, timestamp, status.value, timestamp, terminal, timestamp, call["step_id"]),
+            step = connection.execute("SELECT status FROM steps WHERE id = ?", (call["step_id"],)).fetchone()
+            if step is None:
+                raise ValueError("agent Step is missing")
+            if StepStatus(step["status"]) is StepStatus.PENDING and step_status is StepStatus.WAITING_APPROVAL:
+                self.store._transition_step_in_transaction(
+                    connection, call["step_id"], StepStatus.RUNNING, timestamp, attempt_increment=0
+                )
+            self.store._transition_step_in_transaction(
+                connection, call["step_id"], step_status, timestamp, attempt_increment=0
             )
         return True
 
@@ -587,9 +596,9 @@ class AgentJournal:
                     connection, run, call, ToolCallStatus.SUCCEEDED, decision, timestamp, reason="operator confirmed completion"
                 )
                 self._complete(connection, invocation, token, reconciled=True)
-                connection.execute(
-                    """UPDATE steps SET status = 'succeeded', updated_at = ?, ended_at = ? WHERE id = ?""",
-                    (timestamp, timestamp, call.step_id),
+                self.store._transition_step_in_transaction(
+                    connection, call.step_id, StepStatus.SUCCEEDED, timestamp,
+                    payload={"source": "reconciliation", "decision": decision, "tool_call_id": call.id},
                 )
             elif decision == "confirmed_not_executed":
                 self.store._resolve_recovery(
@@ -610,10 +619,9 @@ class AgentJournal:
                     """UPDATE agent_invocations SET state = 'bound', current_attempt_id = ? WHERE id = ?""",
                     (retry_id, invocation_id),
                 )
-                connection.execute(
-                    """UPDATE steps SET status = 'waiting_approval', attempt_count = attempt_count + 1,
-                    updated_at = ?, ended_at = NULL WHERE id = ?""",
-                    (timestamp, call.step_id),
+                self.store._transition_step_in_transaction(
+                    connection, call.step_id, StepStatus.WAITING_APPROVAL, timestamp, attempt_increment=1,
+                    payload={"source": "reconciliation", "decision": decision, "tool_call_id": retry_id},
                 )
                 connection.execute(
                     "UPDATE runs SET status = 'waiting_approval', updated_at = ? WHERE id = ?", (timestamp, run.id)

@@ -79,3 +79,29 @@ def test_tool_call_step_must_belong_to_its_run(running_store, tmp_path):
             risk_level=RiskLevel.READ_ONLY, execution_kind=ExecutionKind.SUBPROCESS,
             idempotent=True, idempotency_key="key", timeout_seconds=2,
         )
+
+
+def test_step_duplicate_and_illegal_events_do_not_change_history(running_store):
+    step = running_store.create_step('run-1', sequence=1, title='execute')
+    with pytest.raises(ValueError, match='event'):
+        running_store.transition_step(step.id, StepStatus.RUNNING, 'step.completed')
+    assert running_store.list_steps('run-1')[0].status is StepStatus.PENDING
+    running_store.transition_step(step.id, StepStatus.RUNNING, 'step.started')
+    running_store.transition_step(step.id, StepStatus.SUCCEEDED, 'step.completed')
+    before = running_store.list_events('run-1')
+    running_store.transition_step(step.id, StepStatus.SUCCEEDED, 'step.completed')
+    with pytest.raises(ValueError):
+        running_store.transition_step(step.id, StepStatus.FAILED, 'step.failed')
+    assert running_store.list_events('run-1') == before
+
+
+def test_step_ignored_update_cannot_emit_completion(running_store):
+    step = running_store.create_step('run-1', sequence=1, title='execute')
+    running_store.transition_step(step.id, StepStatus.RUNNING, 'step.started')
+    before = running_store.list_events('run-1')
+    with running_store._connect() as db:
+        db.execute("CREATE TRIGGER reject_step BEFORE UPDATE OF status ON steps WHEN NEW.status = 'succeeded' BEGIN SELECT RAISE(IGNORE); END")
+    with pytest.raises(ValueError, match='did not apply'):
+        running_store.transition_step(step.id, StepStatus.SUCCEEDED, 'step.completed')
+    assert running_store.list_steps('run-1')[0].status is StepStatus.RUNNING
+    assert running_store.list_events('run-1') == before

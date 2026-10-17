@@ -27,8 +27,14 @@ as unavailable because Phase 2 does not persist LLM usage per Run.
 `SQLiteStore` owns `runs`, `tool_calls`, `approvals`, and `events`. State
 changes and their lifecycle events are already written in SQLite transactions.
 `list_events(run_id)` returns `EventRecord` values ordered by increasing
-`sequence`; it is the only Trace input. `get_run`, `list_tool_calls(run_id)`,
-and approval records provide the metric inputs.
+`sequence`. Trace is composed from the Event Journal and persisted state tables.
+The Event Journal provides the audit history of key lifecycle transitions;
+Run, Step, ToolCall, and Approval tables provide current execution state and
+entity relationships. These same persisted facts also provide metric inputs.
+Agent Journal and Checkpoint separately preserve the encrypted messages,
+call identities, arguments, and full results required to resume Agent execution.
+ReliAgent does not promise to reconstruct all execution state by replaying events
+and does not implement a complete Event Sourcing projection framework.
 
 Trace, metrics, evaluation results, and reports are derived artifacts. They
 must never write state, events, approvals, or a metric table. Recomputing a
@@ -53,11 +59,15 @@ SQLiteStore facts
 
 `TraceService.export_run(run_id)`:
 
-1. loads the Run and ordered events from the Store;
+1. loads the Run, Steps, ToolCalls, Approvals, and ordered events from the Store;
 2. verifies event sequences start at 1 and increment by exactly one;
 3. redacts every payload recursively before returning it;
 4. returns a JSON-serializable export containing schema version, Run identity,
    ordered events, and a completeness result.
+
+State snapshots must not be used to invent missing historical events. A persisted
+terminal state with no required event remains an integrity gap; exports do not
+repair or write the journal.
 
 The export must retain event type, sequence, timestamp, and non-sensitive
 payload fields. Values whose mapping keys contain `api_key`, `apikey`,
@@ -67,8 +77,8 @@ only for exported JSON. The Store's original Event payload is not mutated.
 
 Trace completeness is a fact-integrity metric, not a claim that every possible
 Agent event exists. A trace is complete only if its event sequence is
-contiguous and every persisted ToolCall has the lifecycle event required by its
-current status:
+contiguous and persisted Runs, Steps, ToolCalls, and Approvals have the required
+lifecycle events. In particular, terminal ToolCalls require:
 
 - `succeeded` requires `tool.completed`;
 - `failed` requires `tool.failed`;
@@ -172,3 +182,46 @@ Tests will prove:
 Stage completion requires targeted Trace/Eval tests, Runtime regression tests,
 the full test suite, compileall, Ruff, and a generated local report checked
 against its raw JSON source.
+
+## Step lifecycle consistency (2026-10-17 revision)
+
+Step uses its existing state machine: `pending`, `running`, `waiting_approval`,
+`succeeded`, `failed`, `cancelled`, and `skipped`. It has no `interrupted` or
+`recoverable` state. `interrupted` belongs to ToolCall; `recoverable` belongs to
+Run and expresses a recovery gate, not a Step state.
+
+| Actual Step change | Audit event |
+| --- | --- |
+| Create `pending` Step | `step.created` |
+| First entry into `running` | `step.started` |
+| `running` to `waiting_approval` | `step.waiting_approval` |
+| `waiting_approval` to `running` | `step.resumed` |
+| Allowed entry into `succeeded` | `step.completed` |
+| Allowed entry into `failed` | `step.failed` |
+| Allowed entry into `cancelled` | `step.cancelled` |
+| `pending` to `skipped` | `step.skipped` |
+
+An Agent Step includes approval handling. Requesting approval first starts its
+pending Step, then moves it to `waiting_approval` within the same transaction;
+this does not mean the tool has started. Attempt count still counts attempts,
+not the number of approval/resume transitions.
+
+Each Step transition checks the existing state machine, updates with an expected
+old-status predicate, and checks exactly one affected row. The corresponding
+event is inserted in the same SQLite transaction, with its affected-row check.
+Any failed state/event write rolls back the transaction, including linked tool
+results and encrypted Agent context changes. Repeating a settled transition
+does not append another event; illegal transitions or mismatched event types
+are rejected. Normal terminal transitions include `from_status`/`to_status`.
+
+If a tool outcome is unknown after interruption or process loss, the Step remains
+unsettled (`running`); ToolCall and Run record the interruption/recovery gate.
+No `step.failed` or `step.completed` is inferred merely from the crash. Explicit
+completion reconciliation performs the current allowed Step transition and emits
+`step.completed` at reconciliation time, with `source: reconciliation` and the
+ToolCall identity. Confirmation of no execution moves the still-running Step to
+`waiting_approval` for a fresh attempt. It does not revive a failed terminal Step.
+
+Historical journals and evaluation evidence are not backfilled. Old terminal
+Steps cannot be revived through reconciliation; such inconsistent legacy records
+remain blocked rather than gaining fabricated lifecycle history.

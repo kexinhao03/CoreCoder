@@ -263,6 +263,10 @@ agent.chat("Produce effect then crash before terminal persistence.")
     [candidate] = recovery.scan(call.run_id)
     assert candidate.kind is RecoveryKind.HUMAN_REQUIRED
     assert store.get_run(call.run_id).status is RunStatus.RECOVERABLE
+    assert store.list_steps(call.run_id)[0].status.value == "running"
+    assert [e.type for e in store.list_events(call.run_id) if e.type.startswith("step.")] == [
+        "step.created", "step.started", "step.waiting_approval", "step.resumed",
+    ]
     with pytest.raises(ValueError):
         recovery.resume_retry(candidate)
     assert source.read_text(encoding="utf-8") == ("changed" if name == "edit_file" else "original|effect")
@@ -293,7 +297,8 @@ def test_keyboard_interrupt_terminates_bash_and_preserves_unknown_result(tmp_pat
         [call] = session.store.list_tool_calls(session.run_id)
         assert call.status is ToolCallStatus.INTERRUPTED
         assert session.store.get_run(session.run_id).status is RunStatus.RECOVERABLE
-        assert session.store.list_steps(session.run_id)[0].status.value == "failed"
+        assert session.store.list_steps(session.run_id)[0].status.value == "running"
+        assert not any(e.type in {"step.failed", "step.completed"} for e in session.store.list_events(session.run_id))
         assert agent.messages[-1]["role"] == "assistant"
         assert session.journal.list_invocations(session.run_id)[0]["result"] is None
         assert session.journal.load(session.run_id)["phase"] == "blocked"

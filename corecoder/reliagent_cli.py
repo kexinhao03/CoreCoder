@@ -362,7 +362,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 store.transition_step(
                     result.call.step_id,
                     step_status,
-                    f"step.{step_status.value}",
+                    "step.completed" if step_status is StepStatus.SUCCEEDED else f"step.{step_status.value}",
                 )
                 if step_status is not StepStatus.SUCCEEDED:
                     run_status = (
